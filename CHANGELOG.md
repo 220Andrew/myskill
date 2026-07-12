@@ -33,6 +33,7 @@ Target release: `v0.1.0-beta.2`.
 - The release workflow now runs Playwright browser E2E and Postgres integration tests before release artifact creation.
 - Production web builds use same-origin `/api` routing to match the nginx CSP and deployment docs.
 - CI and release verification now build the exact API and web Dockerfiles used by Railway as part of the required candidate evidence.
+- Railway promotion and rollback now deploy API first, verify readiness, and then deploy web from the same commit so the web proxy cannot retain a retiring API address.
 
 ### Fixed
 

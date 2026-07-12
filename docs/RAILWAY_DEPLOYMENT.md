@@ -147,7 +147,8 @@ The current live project is intentionally manual but can be made easier without 
 
 1. Keep feature work on a branch and require GitHub CI to pass.
 2. Merge or fast-forward the Railway-connected branch only after the rendered local checks pass.
-3. Redeploy the `api` and `web` Railway services from the same commit.
-4. Run the smoke checks above and a browser login/export check before calling the iteration live.
+3. Deploy the `api` service from the approved commit and wait for Railway to report a successful deployment.
+4. Verify the direct API `/ready` endpoint before deploying `web` from the same commit. Do not replace API and web concurrently: the web proxy must start after the healthy API deployment so it does not retain an address for a retiring private instance.
+5. Verify the web service plus same-origin `/api/health` and `/api/ready`, then run a browser login/export check before calling the iteration live.
 
-The release workflow is intentionally verification-only and does not deploy Railway. Follow the staging, production approval, and rollback boundary in [Release Process](RELEASE.md). Any future deploy automation must use scoped project credentials, preserve a separate staging/user-test step, require explicit production approval, deploy API and web from the same commit, and report resulting deployment IDs plus health/browser readback.
+The release workflow is intentionally verification-only and does not deploy Railway. Follow the staging, production approval, and rollback boundary in [Release Process](RELEASE.md). Any future deploy automation must use scoped project credentials, preserve a separate staging/user-test step, require explicit production approval, deploy API and web from the same commit in API-ready-then-web order, and report resulting deployment IDs plus direct and same-origin health/browser readback.

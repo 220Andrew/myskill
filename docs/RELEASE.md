@@ -100,13 +100,13 @@ Until trusted publishing is configured, the approved maintainer may use npm's br
 
 Production deploy truth comes from [Railway Deployment](RAILWAY_DEPLOYMENT.md) and live Railway readback, not local Git state. Before approval, record the candidate commit, current production commit/deploy IDs, migration requirement, database backup/restore posture, API/web service targets, and rollback owner.
 
-Promote API and web from the same commit. Run migrations before API promotion, do not rerun owner seed after bootstrap, and verify health, public skill detail, browser login/MFA, authenticated export, CLI capability/version, and MCP authorization after deployment.
+Promote API and web from the same commit, but do not replace them concurrently. Run migrations, deploy the API, wait for the platform deployment to report success, and verify the API `/ready` endpoint before deploying the web service. Deploying web only after API readiness ensures its upstream proxy starts against the healthy API deployment instead of retaining an address for a retiring instance. Do not rerun owner seed after bootstrap. After web promotion, verify same-origin `/api/ready`, public skill detail, browser login/MFA, authenticated export, CLI capability/version, and MCP authorization.
 
 ## Rollback
 
 - **Source tag/release**: do not delete, reuse, or move a released tag. Fix forward with a new prerelease version. If public notes were wrong, correct the release text without changing artifact identity.
 - **npm**: move the `beta` dist-tag back to the last known-good published version after owner approval. Prefer deprecation guidance over unpublishing; do not move `latest` as part of beta rollback.
-- **Railway app services**: redeploy the last known-good commit for both API and web, then repeat health/browser/CLI/MCP readbacks. Record any temporary mixed-version interval as an incident.
+- **Railway app services**: redeploy the last known-good API commit first, wait for API readiness, and then redeploy web from that same commit. Repeat same-origin health/browser/CLI/MCP readbacks and record any temporary mixed-version interval as an incident.
 - **Database**: migrations are forward-only by default. Do not run ad hoc down migrations. If a schema/data change is incompatible, stop promotion and choose a tested forward repair or an explicitly approved backup restore with accepted data-loss bounds.
 - **Artifacts**: immutable package bytes are never overwritten. Revoke/unpublish the affected release through the API and issue a replacement version.
 
