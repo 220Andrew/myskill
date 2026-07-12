@@ -36,7 +36,7 @@ Final artifact generation refuses a dirty worktree. `--allow-dirty` exists only 
 1. Select one immutable candidate commit on a branch. Record the full SHA and intended version.
 2. Require the GitHub CI jobs for that commit to pass on Node 22 and 24 LTS, web E2E, and disposable Postgres.
 3. Exercise the same commit through a dedicated staging environment. If no dedicated Railway staging environment is configured, the documented production Compose stack may serve as beta staging, but record that limitation; do not use Railway production as the first test environment.
-4. Record user-test evidence for first-run setup, login/MFA, public browse/detail, author submission/withdrawal, maintainer artifact inspection and hash-attested review/publication, CLI validate/scan/search/export/install/rollback, and MCP read-only discovery.
+4. Record user-test evidence for first-run setup, login/MFA, owner invitation and invitee registration through a captured or staging-only email, public browse/detail, author submission/withdrawal, maintainer artifact inspection and hash-attested review/publication, CLI validate/scan/search/export/install/rollback, and MCP read-only discovery.
 5. Re-run the canonical gate after any candidate change. Evidence from an earlier SHA is stale.
 
 Staging deployment is not release approval. User-test acceptance is a maintainer judgment recorded against the immutable SHA; it does not authorize external writes by itself.
@@ -59,7 +59,7 @@ The release workflow triggers on `v*.*.*` tags and:
 - requires the tag to equal `v<root package version>`;
 - resolves the tag commit and requires it to be an ancestor of `origin/main`;
 - runs the canonical release gate with tag enforcement;
-- builds the root Dockerfile `api`, `web`, and `mcp-http` targets;
+- builds the root Dockerfile `api`, `web`, and `mcp-http` targets plus the exact `Dockerfile.api` and `Dockerfile.web` used by Railway;
 - uploads verification artifacts only.
 
 Configure a GitHub ruleset for the release-tag pattern (for example `v*`) that restricts tag creation, update, and deletion to the release maintainer role. Protect `main` with the aggregate `check` context (which requires both Node matrix jobs), web E2E, and Postgres integration; require current branches and choose administrator bypass deliberately. Read the live ruleset/protection state immediately before release; workflow YAML cannot prove that repository settings are applied.

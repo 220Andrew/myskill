@@ -75,6 +75,27 @@ export interface CompletePasswordResetInput {
   usedAt?: Date;
 }
 
+export interface ChangePasswordAndRevokeCredentialsInput {
+  userId: string;
+  passwordHash: string;
+  passwordUpdatedAt?: Date;
+}
+
+export interface CompleteEmailChangeInput {
+  tokenHash: string;
+  now?: Date;
+  usedAt?: Date;
+}
+
+export type CompleteEmailChangeResult =
+  | { outcome: "changed"; user: AuthUserRecord; previousEmail: string }
+  | { outcome: "email_in_use" };
+
+export interface DisableMfaAndRevokeCredentialsInput {
+  userId: string;
+  disabledAt?: Date;
+}
+
 export type AdminUserStatusChangeResult =
   | { outcome: "updated"; user: AuthUserRecord }
   | { outcome: "not_found" }
@@ -251,6 +272,7 @@ export interface AuthStore {
   updateUserRoles(input: { userId: string; roles: AuthenticatedUser["roles"] }): Promise<AuthUserRecord | null>;
   updateUserRolesAndRevokeCredentials(input: { userId: string; roles: AuthenticatedUser["roles"] }): Promise<AuthUserRecord | null>;
   updatePasswordCredential(input: { userId: string; passwordHash: string; passwordUpdatedAt?: Date }): Promise<boolean>;
+  changePasswordAndRevokeCredentials(input: ChangePasswordAndRevokeCredentialsInput): Promise<boolean>;
   completePasswordReset(input: CompletePasswordResetInput): Promise<boolean>;
   createAuthActionToken(input: CreateAuthActionTokenInput): Promise<AuthActionTokenRecord>;
   consumeAuthActionToken(input: {
@@ -259,6 +281,7 @@ export interface AuthStore {
     now?: Date;
     usedAt?: Date;
   }): Promise<AuthActionTokenWithUser | null>;
+  completeEmailChangeAndRevokeCredentials(input: CompleteEmailChangeInput): Promise<CompleteEmailChangeResult | null>;
   countActiveOwnersExcluding(userId: string): Promise<number>;
   findUserByEmailWithPassword(email: string): Promise<AuthUserWithPassword | null>;
   createSession(input: CreateSessionInput): Promise<void>;
@@ -280,6 +303,7 @@ export interface AuthStore {
   findMfaTotpFactorForUser(input: { userId: string; factorId: string }): Promise<MfaTotpFactorRecord | null>;
   enableMfaTotpFactor(input: { userId: string; factorId: string; lastUsedCounter: number }): Promise<MfaTotpFactorRecord | null>;
   disableMfaTotpFactorsForUser(input: { userId: string; disabledAt?: Date }): Promise<number>;
+  disableMfaAndRevokeCredentials(input: DisableMfaAndRevokeCredentialsInput): Promise<number>;
   disableOtherMfaTotpFactorsForUser(input: { userId: string; factorId: string; disabledAt?: Date }): Promise<number>;
   updateMfaTotpFactorCounter(input: { userId: string; factorId: string; lastUsedCounter: number }): Promise<boolean>;
   replaceMfaRecoveryCodes(input: { userId: string; codeHashes: string[] }): Promise<void>;

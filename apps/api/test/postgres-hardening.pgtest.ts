@@ -151,6 +151,69 @@ test("role changes and credential revocation roll back together on failure", { t
   assert.equal((await createDb(pool).select().from(authSessions))[0].revokedAt instanceof Date, true);
 });
 
+test("account security mutations and credential revocation commit or roll back together", { timeout: 60_000 }, async (t) => {
+  const pool = await freshPool(t);
+  const db = createDb(pool);
+  const store = new PostgresAuthStore(db);
+  const passwordHash = await hashPassword("correct horse battery staple");
+
+  const passwordUser = await createActiveUser(store, "password-atomic@example.com", passwordHash);
+  await createCredentials(store, passwordUser.id, "password");
+  await installRevocationFailure(pool, "fail_password_revocation");
+  const nextPasswordHash = await hashPassword("new correct horse battery staple");
+  await assert.rejects(store.changePasswordAndRevokeCredentials({
+    userId: passwordUser.id,
+    passwordHash: nextPasswordHash,
+  }));
+  await removeRevocationFailure(pool, "fail_password_revocation");
+  assert.equal(await verifyPassword((await store.findUserByEmailWithPassword(passwordUser.email))?.passwordHash ?? "", "correct horse battery staple"), true);
+  assert.deepEqual(await credentialRevocationState(db, passwordUser.id), [null, null]);
+  assert.equal(await store.changePasswordAndRevokeCredentials({ userId: passwordUser.id, passwordHash: nextPasswordHash }), true);
+  assert.equal(await verifyPassword((await store.findUserByEmailWithPassword(passwordUser.email))?.passwordHash ?? "", "new correct horse battery staple"), true);
+  assert.equal((await credentialRevocationState(db, passwordUser.id)).every((value) => value instanceof Date), true);
+
+  const emailUser = await createActiveUser(store, "email-before@example.com", passwordHash);
+  await createCredentials(store, emailUser.id, "email");
+  const emailToken = "e".repeat(43);
+  await store.createAuthActionToken({
+    userId: emailUser.id,
+    purpose: "email_change",
+    tokenHash: hashSessionToken(emailToken),
+    sentToNormalizedEmail: "email-after@example.com",
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  await installRevocationFailure(pool, "fail_email_revocation");
+  await assert.rejects(store.completeEmailChangeAndRevokeCredentials({ tokenHash: hashSessionToken(emailToken) }));
+  await removeRevocationFailure(pool, "fail_email_revocation");
+  assert.ok(await store.findUserByEmailWithPassword("email-before@example.com"));
+  assert.equal(await store.findUserByEmailWithPassword("email-after@example.com"), null);
+  assert.equal((await db.select().from(authActionTokens)).find((token) => token.tokenHash === hashSessionToken(emailToken))?.usedAt, null);
+  assert.deepEqual(await credentialRevocationState(db, emailUser.id), [null, null]);
+  assert.equal((await store.completeEmailChangeAndRevokeCredentials({ tokenHash: hashSessionToken(emailToken) }))?.outcome, "changed");
+  assert.ok(await store.findUserByEmailWithPassword("email-after@example.com"));
+  assert.equal((await credentialRevocationState(db, emailUser.id)).every((value) => value instanceof Date), true);
+
+  const mfaUser = await createActiveUser(store, "mfa-atomic@example.com", passwordHash);
+  const factor = await store.createMfaTotpFactor({
+    userId: mfaUser.id,
+    label: "Atomic factor",
+    secretCiphertext: "test-ciphertext",
+  });
+  await store.enableMfaTotpFactor({ userId: mfaUser.id, factorId: factor.id, lastUsedCounter: 1 });
+  await store.replaceMfaRecoveryCodes({ userId: mfaUser.id, codeHashes: ["f".repeat(64)] });
+  await createCredentials(store, mfaUser.id, "mfa", true);
+  await installRevocationFailure(pool, "fail_mfa_revocation");
+  await assert.rejects(store.disableMfaAndRevokeCredentials({ userId: mfaUser.id }));
+  await removeRevocationFailure(pool, "fail_mfa_revocation");
+  assert.equal(await store.countEnabledMfaFactors(mfaUser.id), 1);
+  assert.equal(await store.countUnusedMfaRecoveryCodes(mfaUser.id), 1);
+  assert.deepEqual(await credentialRevocationState(db, mfaUser.id), [null, null]);
+  assert.equal(await store.disableMfaAndRevokeCredentials({ userId: mfaUser.id }), 1);
+  assert.equal(await store.countEnabledMfaFactors(mfaUser.id), 0);
+  assert.equal(await store.countUnusedMfaRecoveryCodes(mfaUser.id), 0);
+  assert.equal((await credentialRevocationState(db, mfaUser.id)).every((value) => value instanceof Date), true);
+});
+
 test("Postgres revoked release restore enforces privilege and persisted artifact-scan safety", { timeout: 60_000 }, async (t) => {
   const pool = await freshPool(t);
   const db = createDb(pool);
@@ -345,6 +408,55 @@ async function createActiveUser(
     await store.updateUserRoles({ userId: created.user.id, roles });
   }
   return { ...created.user, roles, emailVerifiedAt: new Date() };
+}
+
+async function createCredentials(
+  store: PostgresAuthStore,
+  userId: string,
+  suffix: string,
+  mfaVerified = false,
+): Promise<void> {
+  await store.createSession({
+    userId,
+    tokenHash: hashSessionToken(`${suffix.slice(0, 1) || "s"}`.repeat(43)),
+    expiresAt: new Date(Date.now() + 60_000),
+    mfaVerifiedAt: mfaVerified ? new Date() : null,
+  });
+  await store.createApiToken({
+    userId,
+    name: `${suffix} atomicity`,
+    tokenPrefix: `aiss_${suffix}`,
+    tokenHash: hashApiToken(`aiss_${suffix.slice(0, 1) || "t"}`.repeat(8)),
+    scopes: mfaVerified ? ["review:read"] : ["profile:read"],
+    expiresAt: new Date(Date.now() + 60_000),
+    mfaVerifiedAt: mfaVerified ? new Date() : null,
+  });
+}
+
+async function credentialRevocationState(db: ReturnType<typeof createDb>, userId: string): Promise<Array<Date | null>> {
+  const sessions = (await db.select().from(authSessions)).filter((session) => session.userId === userId);
+  const tokens = await new PostgresAuthStore(db).listApiTokensForUser(userId);
+  assert.equal(sessions.length, 1);
+  assert.equal(tokens.length, 1);
+  return [sessions[0].revokedAt, tokens[0].revokedAt];
+}
+
+async function installRevocationFailure(pool: pg.Pool, name: string): Promise<void> {
+  if (!/^[a-z_]+$/.test(name)) throw new Error("Invalid trigger name.");
+  await pool.query(`
+    CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      RAISE EXCEPTION 'injected credential revocation failure';
+    END $$;
+    CREATE TRIGGER ${name}
+      BEFORE UPDATE ON api_tokens
+      FOR EACH ROW EXECUTE FUNCTION ${name}();
+  `);
+}
+
+async function removeRevocationFailure(pool: pg.Pool, name: string): Promise<void> {
+  if (!/^[a-z_]+$/.test(name)) throw new Error("Invalid trigger name.");
+  await pool.query(`DROP TRIGGER ${name} ON api_tokens; DROP FUNCTION ${name}()`);
 }
 
 function cleanPackageInput(): { manifest: ReturnType<typeof parseSkillManifest>; files: PackageInputFile[] } {

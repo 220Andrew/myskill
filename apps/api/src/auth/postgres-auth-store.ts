@@ -41,9 +41,13 @@ import type {
   CreateSessionInput,
   CreateUserWithPasswordInput,
   CreateUserWithPasswordResult,
+  ChangePasswordAndRevokeCredentialsInput,
+  CompleteEmailChangeInput,
+  CompleteEmailChangeResult,
   CompleteRegistrationInvitationInput,
   CompleteRegistrationInvitationResult,
   CompletePasswordResetInput,
+  DisableMfaAndRevokeCredentialsInput,
   AdminUserStatusChangeResult,
   ProviderConfigRecord,
   ProviderMappedRole,
@@ -422,6 +426,25 @@ export class PostgresAuthStore implements AuthStore {
     return Boolean(credential);
   }
 
+  async changePasswordAndRevokeCredentials(input: ChangePasswordAndRevokeCredentialsInput): Promise<boolean> {
+    const changedAt = input.passwordUpdatedAt ?? new Date();
+    return this.db.transaction(async (tx) => {
+      const [credential] = await tx
+        .update(passwordCredentials)
+        .set({
+          passwordHash: input.passwordHash,
+          passwordUpdatedAt: changedAt,
+        })
+        .where(eq(passwordCredentials.userId, input.userId))
+        .returning({ userId: passwordCredentials.userId });
+      if (!credential) {
+        return false;
+      }
+      await revokeCredentials(tx, input.userId, changedAt);
+      return true;
+    });
+  }
+
   async completePasswordReset(input: CompletePasswordResetInput): Promise<boolean> {
     const now = input.now ?? new Date();
     const usedAt = input.usedAt ?? now;
@@ -459,14 +482,7 @@ export class PostgresAuthStore implements AuthStore {
         eq(authActionTokens.purpose, "password_reset"),
         isNull(authActionTokens.usedAt),
       ));
-      await tx.update(authSessions).set({ revokedAt: usedAt }).where(and(
-        eq(authSessions.userId, row.user.id),
-        isNull(authSessions.revokedAt),
-      ));
-      await tx.update(apiTokens).set({ revokedAt: usedAt }).where(and(
-        eq(apiTokens.userId, row.user.id),
-        isNull(apiTokens.revokedAt),
-      ));
+      await revokeCredentials(tx, row.user.id, usedAt);
       return true;
     });
   }
@@ -504,6 +520,68 @@ export class PostgresAuthStore implements AuthStore {
     }
     const user = await this.findUserById(token.userId);
     return user ? { ...toAuthActionTokenRecord(token), user } : null;
+  }
+
+  async completeEmailChangeAndRevokeCredentials(input: CompleteEmailChangeInput): Promise<CompleteEmailChangeResult | null> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ token: authActionTokens, user: users })
+        .from(authActionTokens)
+        .innerJoin(users, eq(users.id, authActionTokens.userId))
+        .where(and(
+          eq(authActionTokens.tokenHash, input.tokenHash),
+          eq(authActionTokens.purpose, "email_change"),
+          isNull(authActionTokens.usedAt),
+          gt(authActionTokens.expiresAt, now),
+          eq(users.status, "active"),
+          isNotNull(users.emailVerifiedAt),
+        ))
+        .for("update", { of: [authActionTokens, users] })
+        .limit(1);
+      if (!row) {
+        return null;
+      }
+
+      const nextEmail = row.token.sentToNormalizedEmail;
+      const [existing] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.normalizedEmail, nextEmail), ne(users.id, row.user.id)))
+        .limit(1);
+      if (existing) {
+        return { outcome: "email_in_use" };
+      }
+
+      const [updated] = await tx
+        .update(users)
+        .set({
+          email: nextEmail,
+          normalizedEmail: nextEmail,
+          emailVerifiedAt: usedAt,
+          updatedAt: usedAt,
+        })
+        .where(eq(users.id, row.user.id))
+        .returning();
+      if (!updated) {
+        throw new Error("Email change user update failed.");
+      }
+      const [consumed] = await tx
+        .update(authActionTokens)
+        .set({ usedAt })
+        .where(and(eq(authActionTokens.id, row.token.id), isNull(authActionTokens.usedAt)))
+        .returning({ id: authActionTokens.id });
+      if (!consumed) {
+        throw new Error("Email change token consumption failed.");
+      }
+      await revokeCredentials(tx, row.user.id, usedAt);
+      return {
+        outcome: "changed",
+        previousEmail: row.user.email,
+        user: { ...toRecord(updated), roles: await rolesForUser(tx, updated.id) },
+      };
+    });
   }
 
   async countActiveOwnersExcluding(userId: string): Promise<number> {
@@ -570,15 +648,9 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async revokeUserCredentials(userId: string): Promise<void> {
-    const now = new Date();
-    await this.db
-      .update(authSessions)
-      .set({ revokedAt: now })
-      .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)));
-    await this.db
-      .update(apiTokens)
-      .set({ revokedAt: now })
-      .where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+    await this.db.transaction(async (tx) => {
+      await revokeCredentials(tx, userId, new Date());
+    });
   }
 
   async createApiToken(input: CreateApiTokenInput): Promise<ApiTokenRecord> {
@@ -815,6 +887,24 @@ export class PostgresAuthStore implements AuthStore {
     return rows.length;
   }
 
+  async disableMfaAndRevokeCredentials(input: DisableMfaAndRevokeCredentialsInput): Promise<number> {
+    const disabledAt = input.disabledAt ?? new Date();
+    return this.db.transaction(async (tx) => {
+      const disabled = await tx
+        .update(mfaFactors)
+        .set({
+          status: "disabled",
+          disabledAt,
+          updatedAt: disabledAt,
+        })
+        .where(and(eq(mfaFactors.userId, input.userId), ne(mfaFactors.status, "disabled")))
+        .returning({ id: mfaFactors.id });
+      await tx.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, input.userId));
+      await revokeCredentials(tx, input.userId, disabledAt);
+      return disabled.length;
+    });
+  }
+
   async disableOtherMfaTotpFactorsForUser(input: { userId: string; factorId: string; disabledAt?: Date }): Promise<number> {
     const disabledAt = input.disabledAt ?? new Date();
     const rows = await this.db
@@ -968,6 +1058,17 @@ export class PostgresAuthStore implements AuthStore {
 }
 
 type DbLike = Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+async function revokeCredentials(db: DbLike, userId: string, revokedAt: Date): Promise<void> {
+  await db
+    .update(authSessions)
+    .set({ revokedAt })
+    .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)));
+  await db
+    .update(apiTokens)
+    .set({ revokedAt })
+    .where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+}
 
 async function rolesForUser(db: DbLike, userId: string): Promise<Role[]> {
   const rows = await db

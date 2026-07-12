@@ -30,17 +30,20 @@ jobs:
       - run: npm run check
 
   # Preserve the existing required `check` context while making it aggregate
-  # both supported Node lines.
+  # both supported Node lines and the exact Railway image builds.
   check:
     name: check
     if: always()
-    needs: check-supported-node
+    needs: [check-supported-node, railway-images]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every supported Node check
+      - name: Require supported Node checks and Railway images
         env:
-          RESULT: ${{ needs.check-supported-node.result }}
-        run: test "$RESULT" = "success"
+          NODE_RESULT: ${{ needs.check-supported-node.result }}
+          RAILWAY_IMAGES_RESULT: ${{ needs.railway-images.result }}
+        run: |
+          test "$NODE_RESULT" = "success"
+          test "$RAILWAY_IMAGES_RESULT" = "success"
 
   web-e2e:
     runs-on: ubuntu-latest
@@ -57,6 +60,16 @@ jobs:
       - run: npm run test:e2e -w @myskills-app/web
       - name: Run production-like API and web journey
         run: npm run test:e2e:fullstack
+
+  railway-images:
+    name: Railway images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build Railway API image
+        run: docker build --file Dockerfile.api --tag myskills-app-api:ci .
+      - name: Build Railway web image
+        run: docker build --file Dockerfile.web --build-arg VITE_API_BASE_URL=/api --tag myskills-app-web:ci .
 
   postgres-integration:
     runs-on: ubuntu-latest

@@ -99,7 +99,7 @@ The root [Dockerfile](../Dockerfile) is the production Compose and release-workf
 - `web`: Vite assets built with Node 22 LTS and served by nginx with an `/api` proxy.
 - `mcp-http`: optional Node 22 LTS HTTP MCP runtime.
 
-Local Docker Compose starts dependencies only; app processes run through npm for development. The production Compose example and release verification build these targets. The live Railway services currently use the separate [Dockerfile.api](../Dockerfile.api) and [Dockerfile.web](../Dockerfile.web), not the root multi-target file. See [Deployment](DEPLOYMENT.md) and [Railway Deployment](RAILWAY_DEPLOYMENT.md).
+Local Docker Compose starts dependencies only; app processes run through npm for development. The production Compose example builds the root multi-target file. CI and release verification additionally build the separate [Dockerfile.api](../Dockerfile.api) and [Dockerfile.web](../Dockerfile.web) used by the live Railway services so hosted image evidence cannot drift behind the actual deployment path. See [Deployment](DEPLOYMENT.md) and [Railway Deployment](RAILWAY_DEPLOYMENT.md).
 
 ## Planned Architecture
 

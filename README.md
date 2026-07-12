@@ -168,6 +168,8 @@ docker compose --env-file .env.production -f docker-compose.production.example.y
 docker compose --env-file .env.production -f docker-compose.production.example.yml build
 ```
 
+The production Compose example publishes only the web port for browser/API traffic. The API remains private on the Docker network and is reached through the web container's same-origin `/api` proxy; do not add a direct API host port while using numeric `TRUST_PROXY` hop counts.
+
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for production Compose, migration/seed order, reverse proxy requirements, and managed-container deployment guidance.
 
 ## Compatibility And Upgrades

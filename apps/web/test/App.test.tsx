@@ -43,6 +43,62 @@ test("landing page explains public beta status and opens the login page", async 
   assert.equal(window.location.pathname, "/login");
 });
 
+test("invited users complete registration without leaving the token in browser history", async () => {
+  setupDom("http://localhost/auth/register#token=invitation-token");
+  const client = mockClient();
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByRole("heading", { name: "Complete registration" });
+  await waitFor(() => assert.equal(window.location.hash, ""));
+  assert.equal(window.location.pathname, "/auth/register");
+
+  fireEvent.input(view.getByLabelText("Email"), { target: { value: "Invited@Example.com" } });
+  fireEvent.input(view.getByLabelText(/Name/), { target: { value: "Invited User" } });
+  fireEvent.input(view.getByLabelText("Password"), { target: { value: "correct horse battery staple" } });
+  fireEvent.input(view.getByLabelText("Confirm password"), { target: { value: "correct horse battery staple" } });
+  fireEvent.click(view.getByRole("button", { name: "Create account" }));
+
+  await view.findByText("Registration complete. You can now log in.");
+  assert.deepEqual(client.registrationCalls, [{
+    email: "Invited@Example.com",
+    name: "Invited User",
+    password: "correct horse battery staple",
+    inviteToken: "invitation-token",
+  }]);
+  assert.equal(document.body.textContent?.includes("invitation-token"), false);
+
+  fireEvent.click(view.getByRole("link", { name: "Continue to login" }));
+  await view.findByRole("heading", { name: "Login" });
+  assert.equal(window.location.pathname, "/login");
+});
+
+test("registration invitation pages handle missing and expired links safely", async () => {
+  setupDom("http://localhost/auth/register");
+  const missingView = render(<RegistryApp client={mockClient()} />);
+
+  await missingView.findByText("This invitation link is missing its token.");
+  assert.equal(missingView.queryByRole("button", { name: "Create account" }), null);
+  cleanup();
+
+  setupDom("http://localhost/auth/register#token=expired-token");
+  const client = mockClient({
+    registrationError: safeApiError(401, "INVALID_INVITATION_TOKEN", "Expired token hash and account details."),
+  });
+  const expiredView = render(<RegistryApp client={client} />);
+
+  await waitFor(() => assert.equal(window.location.hash, ""));
+  fireEvent.input(expiredView.getByLabelText("Email"), { target: { value: "invited@example.com" } });
+  fireEvent.input(expiredView.getByLabelText("Password"), { target: { value: "correct horse battery staple" } });
+  fireEvent.input(expiredView.getByLabelText("Confirm password"), { target: { value: "correct horse battery staple" } });
+  fireEvent.click(expiredView.getByRole("button", { name: "Create account" }));
+
+  await expiredView.findByText("This link is invalid or expired.");
+  assert.equal(expiredView.queryByRole("button", { name: "Create account" }), null);
+  assert.equal(document.body.textContent?.includes("Expired token hash"), false);
+  assert.equal(document.body.textContent?.includes("expired-token"), false);
+});
+
 test("anonymous registry routes load approved public skills without a session", async () => {
   setupDom("http://localhost/registry");
   const client = mockClient();
@@ -471,6 +527,12 @@ test("admin sessions can manage registration, users, and provider metadata", asy
   assert.equal(document.body.textContent?.includes("private_key"), false);
   assert.equal((view.getByLabelText("Set author@example.com author role") as HTMLInputElement).disabled, true);
 
+  fireEvent.input(view.getByLabelText("Email", { selector: "input[name='invitation-email']" }), { target: { value: "new-author@example.com" } });
+  fireEvent.input(view.getByLabelText(/Name/, { selector: "input[name='invitation-name']" }), { target: { value: "New Author" } });
+  fireEvent.click(view.getByRole("button", { name: "Send invitation" }));
+  await view.findByText(/Invitation sent to new-author@example\.com\./);
+  assert.deepEqual(client.registrationInvitations, [{ email: "new-author@example.com", name: "New Author" }]);
+
   fireEvent.click(view.getByLabelText("Revoke CLI"));
   fireEvent.click(await view.findByRole("button", { name: "Revoke key" }));
   await waitFor(() => assert.deepEqual(client.adminTokenRevokes, ["api-token-1"]));
@@ -533,6 +595,16 @@ test("non-owner admin sessions cannot edit privileged target role controls", asy
   await view.findByRole("button", { name: "Refresh" });
   assert.equal((view.getByLabelText("Set owner@example.com maintainer role") as HTMLInputElement).disabled, true);
   assert.equal((view.getByLabelText("Set author@example.com maintainer role") as HTMLInputElement).disabled, false);
+});
+
+test("admin invitation controls stay unavailable without an MFA-verified session", async () => {
+  const owner = authUser({ email: "owner@example.com", roles: ["owner"], mfaVerified: false });
+  setupAuthenticatedDom("http://localhost/admin", owner);
+  const view = render(<RegistryApp client={mockClient({ user: owner })} />);
+
+  await view.findByRole("heading", { name: "Admin console" });
+  await view.findByText("Sign in with MFA before sending registration invitations.");
+  assert.equal(view.queryByRole("form", { name: "Invite user" }), null);
 });
 
 test("maintainer sessions download an artifact hash before approving review submissions", async (t) => {
@@ -774,6 +846,7 @@ function mockClient(input: {
   release?: ReleaseMetadata;
   getSkillError?: SafeApiError;
   loginError?: SafeApiError;
+  registrationError?: SafeApiError;
   mfaRequired?: boolean;
   mfaStatus?: MfaStatus;
   searchResults?: (query: string) => PublicSkill[];
@@ -814,6 +887,8 @@ function mockClient(input: {
     passwordChanges: string[];
     passwordResetRequests: string[];
     providerUpserts: Array<{ key: string; displayName: string; roleMappings?: ProviderRoleMappingInput[] }>;
+    registrationCalls: Array<{ email: string; password: string; name?: string; inviteToken: string }>;
+    registrationInvitations: Array<{ email: string; name?: string }>;
     registrationUpdates: AdminRegistrationMode[];
     releaseCalls: string[];
     releaseManagementCalls: number;
@@ -844,6 +919,8 @@ function mockClient(input: {
     passwordChanges: [],
     passwordResetRequests: [],
     providerUpserts: [],
+    registrationCalls: [],
+    registrationInvitations: [],
     registrationUpdates: [],
     releaseCalls: [],
     releaseManagementCalls: 0,
@@ -894,7 +971,11 @@ function mockClient(input: {
           user: currentUser,
         };
     },
-    async registerWithInvitation() {
+    async registerWithInvitation(registrationInput) {
+      client.registrationCalls.push(registrationInput);
+      if (input.registrationError) {
+        throw input.registrationError;
+      }
       return { status: "active" };
     },
     async requestPasswordReset(input) {
@@ -1000,8 +1081,12 @@ function mockClient(input: {
       client.registrationUpdates.push(mode);
       return { mode };
     },
-    async createRegistrationInvitation() {
-      throw new Error("Registration invitations are not used by this web mock.");
+    async createRegistrationInvitation(invitationInput) {
+      client.registrationInvitations.push(invitationInput);
+      return {
+        email: invitationInput.email.toLowerCase(),
+        expiresAt: "2026-06-21T00:00:00.000Z",
+      };
     },
     async getAdminSharing() {
       throw new Error("Admin sharing is not used by this web mock.");

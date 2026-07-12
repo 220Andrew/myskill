@@ -86,6 +86,7 @@ const requiredPaths = [
   "apps/mcp/test/tools.test.ts",
   "scripts/check-production-env.mjs",
   "scripts/check-prerelease.mjs",
+  "scripts/production-compose-policy.mjs",
   "scripts/create-release-artifacts.mjs",
   "scripts/run-fullstack-e2e.mjs",
   "scripts/smoke-cli-package.mjs",

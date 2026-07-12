@@ -71,6 +71,7 @@ import {
   type RegistryClient,
   type ReleaseMetadata,
   type ReleaseLifecycleActionName,
+  type RegistrationInvitation,
   type ReviewActionResult,
   type ReviewActionName,
   type ReviewSubmissionSummary,
@@ -89,7 +90,7 @@ interface RegistryAppProps {
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type AuthState = "idle" | "loading" | "mfa";
-type AppView = "landing" | "login" | "reset-password" | "verify-email" | "change-email" | "browse" | "admin" | "review" | "submit" | "teams" | "settings" | "not-found";
+type AppView = "landing" | "login" | "register" | "reset-password" | "verify-email" | "change-email" | "browse" | "admin" | "review" | "submit" | "teams" | "settings" | "not-found";
 
 interface WebSession {
   expiresAt: string;
@@ -536,6 +537,16 @@ export function RegistryApp({ client }: RegistryAppProps) {
       <AuthTokenPage
         client={registryClient}
         kind="reset-password"
+        onHome={openLanding}
+        onLogin={openLogin}
+      />
+    );
+  }
+
+  if (activeView === "register") {
+    return (
+      <InvitationRegistrationPage
+        client={registryClient}
         onHome={openLanding}
         onLogin={openLogin}
       />
@@ -999,6 +1010,168 @@ function LoginPage({
         />
       </section>
     </main>
+    </>
+  );
+}
+
+function InvitationRegistrationPage({
+  client,
+  onHome,
+  onLogin,
+}: {
+  client: RegistryClient;
+  onHome: () => void;
+  onLogin: () => void;
+}) {
+  const token = useMemo(() => authActionTokenFromLocation(), []);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [state, setState] = useState<LoadState>(token ? "idle" : "error");
+  const [message, setMessage] = useState<string | null>(token ? null : "This invitation link is missing its token.");
+  const [linkInvalid, setLinkInvalid] = useState(!token);
+
+  useEffect(() => {
+    if (token) {
+      clearAuthActionTokenFromLocation();
+    }
+  }, [token]);
+
+  async function register() {
+    setMessage(null);
+    if (!token) {
+      setLinkInvalid(true);
+      setState("error");
+      setMessage("This invitation link is missing its token.");
+      return;
+    }
+    if (password.length < 12) {
+      setState("error");
+      setMessage("Use a password with at least 12 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setState("error");
+      setMessage("Passwords do not match.");
+      return;
+    }
+    setState("loading");
+    try {
+      await client.registerWithInvitation({
+        email,
+        password,
+        ...(name.trim() ? { name: name.trim() } : {}),
+        inviteToken: token,
+      });
+      setPassword("");
+      setConfirmPassword("");
+      setState("ready");
+      setMessage("Registration complete. You can now log in.");
+    } catch (error) {
+      setLinkInvalid(apiErrorCode(error) === "INVALID_INVITATION_TOKEN");
+      setState("error");
+      setMessage(safeAccountErrorMessage(error));
+    }
+  }
+
+  return (
+    <>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+      <main className="login-page" id="main-content">
+        <nav className="login-nav" aria-label="Registration navigation">
+          <a className="landing-brand" href="/" onClick={(event) => handleCallbackLink(event, onHome)}>
+            <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" width={360} height={110} />
+          </a>
+          <Button asChild className="login-back shadcn-action-button" size="sm" variant="outline">
+            <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>Login</a>
+          </Button>
+        </nav>
+        <section className="login-panel" aria-labelledby="invitation-registration-heading">
+          <p className="landing-status">Public beta. Invitation required.</p>
+          <h1 id="invitation-registration-heading">Complete registration</h1>
+          <p>Create the account for the email address that received this invitation.</p>
+
+          {!linkInvalid && state !== "ready" && (
+            <form className="auth-widget auth-form" onSubmit={(event) => {
+              event.preventDefault();
+              void register();
+            }}>
+              <label className="auth-field">
+                <span>Email</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="email"
+                  disabled={state === "loading"}
+                  name="email"
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                  spellCheck={false}
+                  type="email"
+                  value={email}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Name <small>(optional)</small></span>
+                <Input
+                  className="auth-input"
+                  autoComplete="name"
+                  disabled={state === "loading"}
+                  name="name"
+                  onChange={(event) => setName(event.target.value)}
+                  value={name}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Password</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="new-password"
+                  disabled={state === "loading"}
+                  minLength={12}
+                  name="password"
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={password}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Confirm password</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="new-password"
+                  disabled={state === "loading"}
+                  minLength={12}
+                  name="confirm-password"
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={confirmPassword}
+                />
+              </label>
+              <Button className="shadcn-action-button" disabled={state === "loading"} size="sm" type="submit">
+                <UserRound size={16} aria-hidden="true" />
+                {state === "loading" ? "Creating account…" : "Create account"}
+              </Button>
+            </form>
+          )}
+
+          {message && (
+            <div className={state === "ready" ? "success-message compact-message" : "safe-message compact-message"} role="status" aria-live="polite">
+              {message}
+            </div>
+          )}
+          {(state === "ready" || linkInvalid) && (
+            <Button asChild className="save-button shadcn-action-button" size="sm">
+              <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>
+                <LogIn size={16} aria-hidden="true" />
+                {state === "ready" ? "Continue to login" : "Return to login"}
+              </a>
+            </Button>
+          )}
+        </section>
+      </main>
     </>
   );
 }
@@ -1983,6 +2156,11 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
   const [providers, setProviders] = useState<AdminProviderConfig[]>([]);
   const [auditEvents, setAuditEvents] = useState<AdminAuditEvent[]>([]);
   const [draft, setDraft] = useState<ProviderDraft>(() => emptyProviderDraft());
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteName, setInviteName] = useState("");
+  const [inviteState, setInviteState] = useState<LoadState>("idle");
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [invitation, setInvitation] = useState<RegistrationInvitation | null>(null);
   const sessionCanEditPrivilegedRoles = session.user.roles.includes("owner");
   const adminInitialLoading = state === "loading" && users.length === 0 && apiTokens.length === 0 && providers.length === 0 && auditEvents.length === 0;
 
@@ -2042,6 +2220,26 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
       const safeMessage = safeAdminErrorMessage(error);
       setMessage(safeMessage);
       throw new Error(safeMessage);
+    }
+  }
+
+  async function createInvitation() {
+    setInviteMessage(null);
+    setInvitation(null);
+    setInviteState("loading");
+    try {
+      const created = await client.createRegistrationInvitation({
+        email: inviteEmail,
+        ...(inviteName.trim() ? { name: inviteName.trim() } : {}),
+      });
+      setInvitation(created);
+      setInviteEmail("");
+      setInviteName("");
+      setInviteState("ready");
+      setAuditEvents(await client.listAdminAudit(25));
+    } catch (error) {
+      setInviteState("error");
+      setInviteMessage(safeAdminErrorMessage(error));
     }
   }
 
@@ -2197,6 +2395,52 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
               <p className="admin-guidance">
                 Use request mode for controlled beta access. Open registration is intentionally guarded until public onboarding and abuse handling are ready.
               </p>
+              {session.user.mfaVerified ? (
+                <form className="provider-form admin-invite-form" aria-label="Invite user" onSubmit={(event) => {
+                  event.preventDefault();
+                  void createInvitation();
+                }}>
+                  <label>
+                    Email
+                    <input
+                      autoComplete="email"
+                      disabled={inviteState === "loading"}
+                      name="invitation-email"
+                      onChange={(event) => setInviteEmail(event.target.value)}
+                      required
+                      spellCheck={false}
+                      type="email"
+                      value={inviteEmail}
+                    />
+                  </label>
+                  <label>
+                    Name <small>(optional)</small>
+                    <input
+                      autoComplete="name"
+                      disabled={inviteState === "loading"}
+                      name="invitation-name"
+                      onChange={(event) => setInviteName(event.target.value)}
+                      value={inviteName}
+                    />
+                  </label>
+                  <Button className="save-button shadcn-action-button" disabled={inviteState === "loading"} size="sm" type="submit">
+                    <Mail size={16} aria-hidden="true" />
+                    {inviteState === "loading" ? "Sending invitation…" : "Send invitation"}
+                  </Button>
+                  {invitation && (
+                    <div className="success-message compact-message admin-invite-message" role="status" aria-live="polite">
+                      Invitation sent to {invitation.email}. It expires {formatDate(invitation.expiresAt)}.
+                    </div>
+                  )}
+                  {inviteMessage && (
+                    <div className="safe-message compact-message admin-invite-message" role="status" aria-live="polite">{inviteMessage}</div>
+                  )}
+                </form>
+              ) : (
+                <div className="safe-message compact-message" role="status">
+                  Sign in with MFA before sending registration invitations.
+                </div>
+              )}
             </>
           )}
         </AdminPanel>
@@ -4308,6 +4552,7 @@ function isSubmitterUser(user: WebAuthUser): boolean {
 function isPublicView(view: AppView): boolean {
   return view === "landing"
     || view === "login"
+    || view === "register"
     || view === "reset-password"
     || view === "verify-email"
     || view === "change-email"
@@ -4321,6 +4566,9 @@ function initialViewFromPath(pathname: string): AppView {
   }
   if (pathname === "/login") {
     return "login";
+  }
+  if (pathname === "/auth/register") {
+    return "register";
   }
   if (pathname === "/auth/reset-password") {
     return "reset-password";
@@ -4358,6 +4606,9 @@ function pathForView(view: AppView): string {
   }
   if (view === "login") {
     return "/login";
+  }
+  if (view === "register") {
+    return "/auth/register";
   }
   if (view === "reset-password") {
     return "/auth/reset-password";
@@ -4608,6 +4859,20 @@ function authActionTokenFromLocation(): string | null {
   const params = new URLSearchParams(rawHash);
   const token = params.get("token");
   return token && token.trim() ? token.trim() : null;
+}
+
+function clearAuthActionTokenFromLocation(): void {
+  if (!window.location.hash) {
+    return;
+  }
+  window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+}
+
+function apiErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return null;
+  }
+  return typeof error.code === "string" ? error.code : null;
 }
 
 const SESSION_STORAGE_KEY = "myskills-app:web-session";

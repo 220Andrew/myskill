@@ -559,7 +559,7 @@ export class AuthService {
     await assertAllowed(this.options.passwordResetLimiter, rateLimitKeys("password-change", actor.email, input.ip));
     await this.assertCanManageAccount(actor, input.currentPassword);
     const passwordHash = await this.hashNewPassword(input.password);
-    const updated = await this.store.updatePasswordCredential({
+    const updated = await this.store.changePasswordAndRevokeCredentials({
       userId: actor.id,
       passwordHash,
       passwordUpdatedAt: new Date(),
@@ -567,7 +567,6 @@ export class AuthService {
     if (!updated) {
       throw new AppError("Password credential not found.", "PASSWORD_CREDENTIAL_NOT_FOUND", 404);
     }
-    await this.store.revokeUserCredentials(actor.id);
     await this.store.recordAuditEvent({
       actorUserId: actor.id,
       action: "account.password.change",
@@ -613,38 +612,25 @@ export class AuthService {
       this.options.authActionTokenLimiter ?? this.options.emailVerificationLimiter,
       tokenRateLimitKeys("email-change-confirm", tokenHash, input.ip),
     );
-    const consumed = await this.store.consumeAuthActionToken({
+    const completed = await this.store.completeEmailChangeAndRevokeCredentials({
       tokenHash,
-      purpose: "email_change",
       now: new Date(),
     });
-    if (!consumed || !isUsableAuthenticatedAccount(consumed.user)) {
+    if (!completed) {
       throw invalidVerificationToken();
     }
-    const email = consumed.sentToNormalizedEmail;
-    const existing = await this.store.findUserByEmailWithPassword(email);
-    if (existing && existing.id !== consumed.user.id) {
+    if (completed.outcome === "email_in_use") {
       throw new AppError("Email address is already in use.", "EMAIL_ALREADY_IN_USE", 409);
     }
-    const changedAt = consumed.usedAt ?? new Date();
-    const updated = await this.store.updateUserEmail({
-      userId: consumed.user.id,
-      email,
-      emailVerifiedAt: changedAt,
-    });
-    if (!updated) {
-      throw invalidVerificationToken();
-    }
-    await this.store.revokeUserCredentials(consumed.user.id);
     await this.store.recordAuditEvent({
-      actorUserId: consumed.user.id,
+      actorUserId: completed.user.id,
       action: "account.email_change.confirm",
       decision: "allow",
       resourceType: "user",
-      resourceId: consumed.user.id,
+      resourceId: completed.user.id,
       details: {
-        previousEmail: consumed.user.email,
-        newEmail: email,
+        previousEmail: completed.previousEmail,
+        newEmail: completed.user.email,
         credentialsRevoked: true,
       },
     });
@@ -906,12 +892,10 @@ export class AuthService {
 
   async disableTotpMfa(actor: AuthResponseUser, input: DisableTotpMfaInput): Promise<{ status: "disabled"; disabledFactors: number }> {
     await this.assertCanManageMfa(actor, input.password);
-    const disabledFactors = await this.store.disableMfaTotpFactorsForUser({
+    const disabledFactors = await this.store.disableMfaAndRevokeCredentials({
       userId: actor.id,
       disabledAt: new Date(),
     });
-    await this.store.replaceMfaRecoveryCodes({ userId: actor.id, codeHashes: [] });
-    await this.store.revokeUserCredentials(actor.id);
     await this.store.recordAuditEvent({
       actorUserId: actor.id,
       action: "account.mfa.disable",

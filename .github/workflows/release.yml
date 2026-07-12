@@ -75,6 +75,12 @@ jobs:
       - name: Build web image
         run: docker build --target web --build-arg VITE_API_BASE_URL=/api -t myskills-app-web:${{ github.ref_name }} .
 
+      - name: Build Railway API image
+        run: docker build --file Dockerfile.api --tag myskills-app-railway-api:${{ github.ref_name }} .
+
+      - name: Build Railway web image
+        run: docker build --file Dockerfile.web --build-arg VITE_API_BASE_URL=/api --tag myskills-app-railway-web:${{ github.ref_name }} .
+
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:

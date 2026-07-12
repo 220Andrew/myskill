@@ -45,6 +45,17 @@ services:
       S3_BUCKET: myskills-e2e
     restart: "no"
 
+  mailpit:
+    image: axllent/mailpit:v1.30.4@sha256:5a49a77c5bdbe7c5474450b4f46348d09949df3695257729c93a30369382d4f6
+    environment:
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_LABEL: MySkills E2E
+      MP_MAX_AGE: 1h
+      MP_MAX_MESSAGES: "20"
+    ports:
+      - "127.0.0.1:${MYSKILLS_E2E_MAILPIT_PORT:-43101}:8025"
+    restart: "no"
+
   api:
     build:
       context: .
@@ -55,6 +66,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -66,10 +79,10 @@ services:
       ALLOWED_WEB_ORIGINS: http://127.0.0.1:${MYSKILLS_E2E_WEB_PORT:-43100}
       TRUST_PROXY: "1"
       AUTH_NOTIFICATION_MODE: smtp
-      SMTP_HOST: mail.invalid
-      SMTP_PORT: "587"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
       SMTP_SECURE: "false"
-      SMTP_REQUIRE_TLS: "true"
+      SMTP_REQUIRE_TLS: "false"
       SMTP_TLS_REJECT_UNAUTHORIZED: "true"
       SMTP_FROM: MySkills E2E <noreply@example.test>
       ARTIFACT_STORAGE_MODE: s3

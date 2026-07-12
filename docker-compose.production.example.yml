@@ -112,8 +112,11 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
       S3_FORCE_PATH_STYLE: "true"
       S3_ALLOW_INSECURE_ENDPOINT: "true" # Only for the private Docker network MinIO endpoint above.
-    ports:
-      - "${API_PORT:-3001}:3001"
+    # Keep the API private to the Compose network. Browser and authenticated
+    # traffic enters through web's same-origin /api proxy so TRUST_PROXY has one
+    # consistent nginx hop and cannot be bypassed through a direct host port.
+    expose:
+      - "3001"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

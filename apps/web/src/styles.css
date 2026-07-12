@@ -4217,6 +4217,18 @@ code {
   line-height: 1.45;
 }
 
+.admin-invite-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.admin-invite-form > button,
+.admin-invite-message {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
 .registration-posture-open {
   border-color: #f1d39c;
   background: var(--warning-soft);

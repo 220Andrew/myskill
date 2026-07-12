@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import test from "node:test";
+import { validateProductionComposePolicy } from "../production-compose-policy.mjs";
 
 const validEnv = {
   NODE_ENV: "production",
@@ -44,6 +45,21 @@ test("production preflight does not echo untrusted URL or proxy values", () => {
   });
   assert.equal(result.status, 1);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(marker));
+});
+
+test("production Compose keeps numeric proxy trust behind the private web ingress", () => {
+  const compose = readFileSync(resolve("docker-compose.production.example.yml"), "utf8");
+  const envTemplate = readFileSync(resolve(".env.production.example"), "utf8");
+  assert.deepEqual(validateProductionComposePolicy(compose, envTemplate), []);
+
+  const directlyPublished = compose.replace(
+    '    expose:\n      - "3001"',
+    '    ports:\n      - "${API_PORT:-3001}:3001"',
+  );
+  assert.match(
+    validateProductionComposePolicy(directlyPublished, envTemplate).join("\n"),
+    /must not publish an API host port while TRUST_PROXY is a numeric hop count/,
+  );
 });
 
 test("release artifact generation supports repeat verification with unique outputs", () => {

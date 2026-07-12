@@ -23,7 +23,7 @@ Do not deploy this project into any team or work Railway workspace.
 
 The optional HTTP MCP service is not part of the maintained live beta service set.
 
-`Dockerfile.api` and `Dockerfile.web` are the current Railway image sources. The root multi-target `Dockerfile` is used by the production Compose example and release verification, not by the live Railway services. All three build app workspaces with Node 22 LTS; production starts use injected variables and do not copy the local `.env` into images.
+`Dockerfile.api` and `Dockerfile.web` are the current Railway image sources. CI and release verification build those exact files in addition to the root multi-target `Dockerfile` used by the production Compose example. All three build app workspaces with Node 22 LTS; production starts use injected variables and do not copy the local `.env` into images.
 
 ## Live Gaps Requiring Promotion Approval
 
@@ -93,6 +93,12 @@ SMTP remains supported for self-hosted deployments, but the Railway production d
 3. Create a dedicated send-only Resend API key named `MySkills Railway production`.
 4. Set Railway API variables: `AUTH_NOTIFICATION_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM=MySkills <noreply@your-domain.example>`.
 5. Redeploy the `api` service and request a password reset for the configured owner account to verify delivery.
+
+## Staging Email Isolation
+
+Never copy the production Resend key into a staging environment. Use either a dedicated staging send-only key or a private, non-forwarding SMTP capture service such as Mailpit on the staging environment's private network. A capture service can prove message content, action-link construction, token expiry/single use, and browser completion without contacting real recipients; it does not prove Resend acceptance, sender verification, inbox placement, or external deliverability.
+
+Keep staging on `NODE_ENV=production`. Do not enable console notification delivery to work around email configuration because console delivery logs raw action links, and do not expose the capture service publicly. Remove the production `RESEND_API_KEY` and `RESEND_FROM` references from staging before applying isolated SMTP settings.
 
 ## First Owner Bootstrap
 

@@ -22,6 +22,7 @@ Target release: `v0.1.0-beta.2`.
 - Added Chromium browser E2E coverage for cookie-backed web login and localStorage token avoidance.
 - Added Postgres coverage for review bundle hashes, approval hash mismatch failures, and legacy approved-row backfill.
 - Added production preflight coverage for supported `TRUST_PROXY` values.
+- Added MFA-gated owner invitations and a public invitation-registration page, with Mailpit-backed full-stack proof that the emailed fragment token is scrubbed before account creation and login.
 
 ### Changed
 
@@ -31,11 +32,12 @@ Target release: `v0.1.0-beta.2`.
 - Review artifact downloads now save the same compact JSON payload bytes that the approval hash represents.
 - The release workflow now runs Playwright browser E2E and Postgres integration tests before release artifact creation.
 - Production web builds use same-origin `/api` routing to match the nginx CSP and deployment docs.
+- CI and release verification now build the exact API and web Dockerfiles used by Railway as part of the required candidate evidence.
 
 ### Fixed
 
 - Restored anonymous access to the approved public registry and normalized unauthorized role-gated deep links without rendering privileged workspaces.
-- Made password reset, credential revocation, last-owner enforcement, admin role transitions, and deny-audit persistence atomic under concurrent Postgres requests.
+- Made password reset, password change, confirmed email change, MFA removal, credential revocation, last-owner enforcement, admin role transitions, and deny-audit persistence atomic under concurrent Postgres requests.
 - Required revoked-release restoration to be MFA-verified, privileged, and backed by the approved artifact plus a successful scan.
 - Aligned nginx with the API's bounded 14 MiB submission envelope and made container healthchecks use `/ready`.
 - Backfilled approved unpublished submissions with their reviewed artifact hash during migration so existing review rows can still be published.
@@ -47,6 +49,7 @@ Target release: `v0.1.0-beta.2`.
 ### Security
 
 - Added an API-wide shared request limiter, bounded auth parsers and rate-limit cleanup, route-specific submission limits, and allowed-Origin enforcement for cookie-authenticated mutations.
+- Removed the production Compose API host port so numeric proxy trust cannot be bypassed through a shorter direct ingress path; browser and authenticated API traffic now enters through the web reverse proxy only.
 - Hardened the public MCP HTTP boundary with per-IP rate limits, safe proxy opt-in, bounded headers/bodies/connections, finite downstream and upstream timeouts, abort propagation, and deterministic resource cleanup.
 - Removed broad regular-expression and script file-race findings, kept bearer tokens hash-only at rest, and added executable invariants around the narrow CodeQL central-rate-limit waiver.
 

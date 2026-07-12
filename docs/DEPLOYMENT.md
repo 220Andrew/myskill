@@ -53,7 +53,7 @@ The MCP HTTP service requires explicit `MYSKILLS_MCP_ALLOWED_HOSTS` when bound t
 
 ## Reverse Proxy And TLS
 
-Terminate TLS in front of the `web`, `api`, and optional `mcp-http` services. The example Compose file exposes local host ports for that reverse proxy to consume; it does not publish TLS itself.
+Terminate TLS in front of the `web` and optional `mcp-http` services. The production Compose example deliberately does not publish the API to a host port: browser and authenticated API traffic enters through the web service's same-origin `/api` proxy, and nginx reaches `api:3001` over the private Docker network. Point the public reverse proxy at `WEB_PORT`; do not create a second public route to the API while using a numeric `TRUST_PROXY` hop count.
 
 Required public values and routes:
 
@@ -61,7 +61,7 @@ Required public values and routes:
 - `VITE_API_BASE_URL`: browser API base baked into the web image at build time. The Compose example uses `/api` so browser requests stay same-origin.
 - `API_PROXY_TARGET`: internal API target used by nginx for `/api/*`; the Compose example uses `http://api:3001`.
 - `ALLOWED_WEB_ORIGINS`: comma-separated browser origins allowed to call the API.
-- `TRUST_PROXY`: trusted proxy hop count or proxy address list for forwarded client IP handling. Use `1` for the included single nginx proxy path; do not use broad `true` in production.
+- `TRUST_PROXY`: trusted proxy hop count or proxy address list for forwarded client IP handling. Use `1` for the included single nginx-to-API path only because the API has no direct host ingress; do not use broad `true` in production. If the topology changes, re-evaluate both the hop count and every reachable API path before deployment.
 
 If `VITE_API_BASE_URL` changes, rebuild the `web` image because Vite embeds that value during the build.
 
@@ -91,6 +91,18 @@ Use `--require-seed` before the first owner bootstrap. The check fails for:
 - public MCP bind without allowed hosts
 
 The API also enforces critical production checks at runtime. The preflight exists so operators fail before a container enters a restart loop.
+
+For the production Compose example, verify the only host-published browser/API port belongs to `web`, then smoke the API through that ingress:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.example.yml ps
+curl "http://127.0.0.1:${WEB_PORT:-3000}/health"
+curl "http://127.0.0.1:${WEB_PORT:-3000}/api/health"
+curl "http://127.0.0.1:${WEB_PORT:-3000}/api/ready"
+curl "http://127.0.0.1:${WEB_PORT:-3000}/api/v1/skills"
+```
+
+Do not use a direct `localhost:3001` smoke for this topology; that host route intentionally does not exist.
 
 ## Managed Container Targets
 

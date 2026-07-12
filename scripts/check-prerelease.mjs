@@ -7,6 +7,7 @@ import {
   parseSkillManifest,
   scanTextForPackageRisks,
 } from "../packages/skill-package/dist/index.js";
+import { validateProductionComposePolicy } from "./production-compose-policy.mjs";
 
 const root = process.cwd();
 const failures = [];
@@ -267,7 +268,7 @@ function checkPolicyLanguageAndLinks() {
 
 function checkWorkflowContracts() {
   const ci = readText(".github/workflows/ci.yml") ?? "";
-  for (const expected of ["22.x", "24.x", "npm run check", "npm run test:e2e:fullstack"]) {
+  for (const expected of ["22.x", "24.x", "npm run check", "npm run test:e2e:fullstack", "needs: [check-supported-node, railway-images]"]) {
     if (!ci.includes(expected)) failures.push(`.github/workflows/ci.yml must include ${JSON.stringify(expected)}.`);
   }
 
@@ -277,6 +278,17 @@ function checkWorkflowContracts() {
   }
   if (/\b(?:npm\s+publish|gh\s+release\s+create|docker\s+push)\b/.test(release)) {
     failures.push("Release verification workflow must not publish npm packages, GitHub Releases, or container images.");
+  }
+
+  for (const [path, workflow] of [
+    [".github/workflows/ci.yml", ci],
+    [".github/workflows/release.yml", release],
+  ]) {
+    for (const dockerfile of ["Dockerfile.api", "Dockerfile.web"]) {
+      if (!workflow.includes(`docker build --file ${dockerfile}`)) {
+        failures.push(`${path} must build the live Railway image from ${dockerfile}.`);
+      }
+    }
   }
 }
 
@@ -294,6 +306,10 @@ function checkImplementationInvariants() {
   const productionCompose = readText("docker-compose.production.example.yml") ?? "";
   if (!productionCompose.includes("http://127.0.0.1:3001/ready")) {
     failures.push("docker-compose.production.example.yml API healthcheck must use dependency-aware /ready.");
+  }
+  const productionEnvTemplate = readText(".env.production.example") ?? "";
+  for (const error of validateProductionComposePolicy(productionCompose, productionEnvTemplate)) {
+    failures.push(error);
   }
 
   const mcpHttpSource = readText("apps/mcp/src/http.ts") ?? "";

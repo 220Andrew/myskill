@@ -873,7 +873,11 @@ export function safeAccountErrorMessage(error: unknown): string {
   }
   if (
     isSafeApiError(error)
-    && (error.code === "INVALID_RESET_TOKEN" || error.code === "INVALID_VERIFICATION_TOKEN")
+    && (
+      error.code === "INVALID_RESET_TOKEN"
+      || error.code === "INVALID_VERIFICATION_TOKEN"
+      || error.code === "INVALID_INVITATION_TOKEN"
+    )
   ) {
     return "This link is invalid or expired.";
   }
@@ -896,6 +900,12 @@ export function safeAccountErrorMessage(error: unknown): string {
 }
 
 export function safeAdminErrorMessage(error: unknown): string {
+  if (isSafeApiError(error) && error.code === "USER_NOT_INVITABLE") {
+    return "That email address cannot be invited.";
+  }
+  if (isSafeApiError(error) && error.code === "INVITATION_DELIVERY_FAILED") {
+    return "Invitation email could not be sent. Check notification delivery and try again.";
+  }
   if (isSafeApiError(error) && (error.status === 401 || error.status === 403)) {
     return "Admin access requires an MFA-verified owner or admin session.";
   }
