@@ -104,8 +104,12 @@ test("CORS allows configured web origins only", async (t) => {
 
   assert.equal(allowed.statusCode, 204);
   assert.equal(allowed.headers["access-control-allow-origin"], "http://localhost:3000");
+  assert.equal(allowed.headers["access-control-allow-credentials"], "true");
+  assert.match(String(allowed.headers["access-control-allow-headers"]), /x-myskills-session-response/);
+  assert.match(String(allowed.headers["access-control-expose-headers"]), /x-myskills-artifact-sha256/);
   assert.equal(denied.statusCode, 204);
   assert.equal(denied.headers["access-control-allow-origin"], undefined);
+  assert.equal(denied.headers["access-control-expose-headers"], undefined);
 });
 
 test("GET /v1/me requires authentication", async (t) => {

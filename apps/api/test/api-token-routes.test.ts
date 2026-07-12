@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { generateTotpCode, hashApiToken, hashPassword, hashSessionToken } from "@myskills-app/auth";
 import type { PublicSkill } from "@myskills-app/core";
 import { buildApp } from "../src/app.js";
@@ -219,6 +220,7 @@ test("API token scopes gate protected routes separately from roles", async (t) =
   const unverifiedMaintainerSubmit = await createApiToken(app, unverifiedMaintainerSession, ["skills:submit"]);
   const reviewRead = await createApiToken(app, maintainerSession, ["review:read"]);
   const reviewWrite = await createApiToken(app, maintainerSession, ["review:write"]);
+  const reviewReadWrite = await createApiToken(app, maintainerSession, ["review:read", "review:write"]);
 
   const missingScope = await app.inject({
     method: "POST",
@@ -316,18 +318,34 @@ test("API token scopes gate protected routes separately from roles", async (t) =
   assert.equal(readWithWriteOnly.statusCode, 403);
   assert.equal(readWithWriteOnly.json().error.code, "API_TOKEN_SCOPE_REQUIRED");
 
+  const bundleWithWriteOnly = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submitted.json().submission.id}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${reviewWrite.token}` },
+  });
+  assert.equal(bundleWithWriteOnly.statusCode, 403);
+  assert.equal(bundleWithWriteOnly.json().error.code, "API_TOKEN_SCOPE_REQUIRED");
+
+  const reviewBundle = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submitted.json().submission.id}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${reviewReadWrite.token}` },
+  });
+  assert.equal(reviewBundle.statusCode, 200);
+  const artifactSha256 = createHash("sha256").update(reviewBundle.body).digest("hex");
+
   const approved = await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submitted.json().submission.id}/actions`,
-    headers: { authorization: `Bearer ${reviewWrite.token}` },
-    payload: { action: "approve" },
+    headers: { authorization: `Bearer ${reviewReadWrite.token}` },
+    payload: { action: "approve", artifactSha256 },
   });
   assert.equal(approved.statusCode, 200);
 
   const published = await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submitted.json().submission.id}/actions`,
-    headers: { authorization: `Bearer ${reviewWrite.token}` },
+    headers: { authorization: `Bearer ${reviewReadWrite.token}` },
     payload: { action: "publish" },
   });
   assert.equal(published.statusCode, 200);
@@ -407,6 +425,14 @@ test("MCP session requires an API token with skills read scope", async (t) => {
   });
   assert.equal(sessionDenied.statusCode, 403);
   assert.equal(sessionDenied.json().error.code, "API_TOKEN_AUTH_REQUIRED");
+
+  const cookieSessionDenied = await app.inject({
+    method: "GET",
+    url: "/v1/mcp/session",
+    headers: { cookie: `myskills_session=${encodeURIComponent(session)}` },
+  });
+  assert.equal(cookieSessionDenied.statusCode, 403);
+  assert.equal(cookieSessionDenied.json().error.code, "API_TOKEN_AUTH_REQUIRED");
 
   const wrongScope = await app.inject({
     method: "GET",

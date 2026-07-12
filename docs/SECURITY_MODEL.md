@@ -1,9 +1,9 @@
 # Security Model
 
-Version: 0.1.0-alpha.1
-Last updated: 2026-06-18
+Version: 0.1.0-beta.2
+Last updated: 2026-06-30
 
-This security model describes the current alpha controls. The companion threat model in [THREAT_MODEL.md](THREAT_MODEL.md) records attacker goals, trust boundaries, residual alpha risks, and business-safe release gates.
+This security model describes the current public beta controls. The companion threat model in [THREAT_MODEL.md](THREAT_MODEL.md) records attacker goals, trust boundaries, residual prerelease risks, and business-safe release gates.
 
 ## Main Risks
 
@@ -64,8 +64,8 @@ This security model describes the current alpha controls. The companion threat m
 - Public bundle delivery uses the same public/lifecycle-approved-or-deprecated/review-approved/passed/published/not-deleted predicate as public search and detail.
 - Deprecated releases remain visible for install/export continuity. Unpublished, revoked, archived, and deleted releases are hidden from public search, detail, metadata, and bundle delivery.
 - Reject archive traversal, absolute paths, symlinks, encrypted archives, unsupported compression, excessive size, and excessive file count.
-- The alpha scanner blocks known credential/private-key patterns, destructive shell snippets, common encoded shell execution, unsafe prompt-instruction and exfiltration patterns, and unsafe archive structures, and warns on dependency install hooks. Broader fixture-backed scanning for uncommon secrets, generated binaries, and semantic package review remains business-safe production hardening.
-- Require maintainer approval and an explicit publish action before publication.
+- The prerelease scanner blocks known credential/private-key patterns, destructive shell snippets, common encoded shell execution, unsafe prompt-instruction and exfiltration patterns, and unsafe archive structures, and warns on dependency install hooks. Broader fixture-backed scanning for uncommon secrets, generated binaries, and semantic package review remains business-safe production hardening.
+- Require maintainer artifact inspection, hash-attested approval, and an explicit publish action before publication.
 - Lifecycle actions change server-owned release or skill state only; they do not rewrite immutable artifact hashes or package payloads.
 - Store immutable artifact hashes.
 

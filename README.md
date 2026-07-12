@@ -16,7 +16,7 @@ MySkills is an open-source beta platform for publishing, reviewing, discovering,
 
 ## Release Status
 
-Current target: **v0.1.0-beta.1**.
+Current target: **v0.1.0-beta.2**.
 
 This beta is intended for real external trial use with documented compatibility, support, and upgrade expectations. It is still prerelease software and not yet the business-safe production release: API contracts, package formats, deployment defaults, and operational guidance may still change before `v1.0`.
 
@@ -88,9 +88,9 @@ curl http://localhost:3001/v1/skills/release-notes-helper
 
 The seeded owner account uses `SEED_OWNER_EMAIL` and `SEED_OWNER_PASSWORD` from `.env`.
 
-Open `http://localhost:3000` to browse approved skills, inspect release export guidance, and sign in with the seeded owner account. The browser UI supports MFA challenge completion when the account requires it, authenticated author `.zip` package submission and withdrawal, maintainer review approval/request-changes/rejection/publication, owner/admin lifecycle controls for skills and releases, and owner/admin console workflows for registration mode, user status actions, role updates, provider metadata/mapping management, and audit review.
+Open `http://localhost:3000` to browse approved skills, inspect release export guidance, and sign in with the seeded owner account. The browser UI supports MFA challenge completion when the account requires it, authenticated author `.zip` package submission and withdrawal, maintainer artifact download with hash-attested approval/request-changes/rejection/publication, owner/admin lifecycle controls for skills and releases, and owner/admin console workflows for registration mode, user status actions, role updates, provider metadata/mapping management, and audit review.
 
-Local auth verification and password-reset notifications default to `AUTH_NOTIFICATION_MODE=console`; development action links appear in the API process output. Production deployments use `AUTH_NOTIFICATION_MODE=smtp` and must set `APP_BASE_URL` to an HTTPS web origin plus SMTP settings in the environment or secret store.
+Local auth verification and password-reset notifications default to `AUTH_NOTIFICATION_MODE=console`; development action links appear in the API process output. Production deployments use `AUTH_NOTIFICATION_MODE=resend` or `AUTH_NOTIFICATION_MODE=smtp` and must set `APP_BASE_URL` to an HTTPS web origin plus provider settings in the environment or secret store.
 
 To run the stdio MCP server, create an API token with `skills:read` scope and start:
 
@@ -164,6 +164,7 @@ Container packaging is available for production API, web, and optional HTTP MCP 
 
 ```bash
 npm run check:prod-env -- --env-file .env.production --require-seed
+docker compose --env-file .env.production -f docker-compose.production.example.yml config
 docker compose --env-file .env.production -f docker-compose.production.example.yml build
 ```
 
@@ -196,4 +197,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and user-facing changes.
 
 ## Current Status
 
-This is the public beta foundation slice. It has workspace packages, a Fastify API, first-party email/password login with bearer sessions, hash-only email verification and password-reset action tokens, SMTP/dev auth notification delivery, MFA challenge flow, browser login/logout with session-aware API calls, CLI login/logout with API-URL-scoped stored sessions, hashed scoped API tokens, MFA-verified admin provider config and claim-to-role mapping management, public skill search/detail/release/bundle endpoints, skill versioning with release metadata and artifact checksums, MCP token introspection with `skills:read` and session decision audit events, authenticated package intake with server-side archive extraction and scan evidence, maintainer approve/publish actions, a Vite/React web browser for public registry metadata, author `.zip` package submission, maintainer review, and admin workflows including safe local role editing, read-only stdio and stateless Streamable HTTP MCP servers, a starter CLI with verified export, local install/list/update/rollback, and token management, Drizzle/Postgres schema and migrations, Docker Compose for Postgres plus S3-compatible object storage, production container targets and preflight env validation, seed data, a public-safe example skill package, package manifest validation, local package risk scanning, deterministic prerelease checks, and reproducible release artifacts.
+This is the public beta foundation slice. It has workspace packages, a Fastify API, first-party email/password login with token-free HttpOnly SameSite browser session responses, hash-only email verification and password-reset action tokens, Resend/SMTP/dev auth notification delivery, MFA challenge flow, browser login/logout with session-aware API calls, CLI login/logout with API-URL-scoped stored bearer sessions, hashed scoped API tokens, MFA-verified admin provider config and claim-to-role mapping management, public skill search/detail/release/bundle endpoints, skill versioning with release metadata and artifact checksums, MCP token introspection with `skills:read` and session decision audit events, authenticated package intake with server-side archive extraction and scan evidence, maintainer artifact download plus hash-attested approve/publish actions, a Vite/React web browser for public registry metadata, author `.zip` package submission, maintainer review, and admin workflows including safe local role editing, read-only stdio and stateless Streamable HTTP MCP servers, a starter CLI with verified export, local install/list/update/rollback, and token management, Drizzle/Postgres schema and migrations, Docker Compose for Postgres plus S3-compatible object storage, production container targets and preflight env validation, seed data, a public-safe example skill package, package manifest validation, local package risk scanning, deterministic prerelease checks, and reproducible release artifacts.

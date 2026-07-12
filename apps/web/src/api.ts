@@ -187,6 +187,7 @@ export interface ReviewSubmissionSummary {
   lifecycleStatus: string;
   reviewStatus: string;
   securityStatus: string;
+  approvedArtifactSha256: string | null;
   platforms: Array<{ name: string; installTarget: string; status: string }>;
   findingCount: number;
   createdAt: string;
@@ -206,6 +207,7 @@ export interface ReviewActionResult {
   lifecycleStatus: string;
   reviewStatus: string;
   securityStatus: string;
+  approvedArtifactSha256: string | null;
   publishedAt: string | null;
 }
 
@@ -285,12 +287,16 @@ export interface SkillPackageBundle {
   files: Array<{ path: string; content: string }>;
 }
 
+export interface ReviewSubmissionBundle {
+  artifactSha256: string;
+  payload: SkillPackageBundle;
+}
+
 export type LoginResult =
-  | { mfaRequired: false; token: string; expiresAt: string; user: WebAuthUser }
+  | { mfaRequired: false; expiresAt: string; user: WebAuthUser }
   | { mfaRequired: true; challengeToken: string; expiresAt: string; user: WebAuthUser };
 
 export interface SessionResult {
-  token: string;
   expiresAt: string;
   user: WebAuthUser;
 }
@@ -335,7 +341,8 @@ export interface RegistryClient {
   exportUserSubmission(submissionId: string, token?: string): Promise<SkillPackageBundle>;
   performSubmissionAction(submissionId: string, action: SubmissionOwnerActionName, reason?: string, token?: string): Promise<UserSubmissionSummary>;
   listReviewSubmissions(token?: string): Promise<ReviewSubmissionSummary[]>;
-  performReviewAction(submissionId: string, action: ReviewActionName, reason?: string, token?: string): Promise<ReviewActionResult>;
+  getReviewSubmissionBundle(submissionId: string, platform?: string, token?: string): Promise<ReviewSubmissionBundle>;
+  performReviewAction(input: { submissionId: string; action: ReviewActionName; reason?: string; artifactSha256?: string }, token?: string): Promise<ReviewActionResult>;
   listSkillReleases(slug: string, token?: string): Promise<SkillReleaseSummary[]>;
   updateSkillMetadata(input: { slug: string; title?: string; summary?: string; visibility?: VisibilityScope; tags?: string[]; reason?: string }, token?: string): Promise<SkillManagementSummary>;
   performSkillAction(slug: string, action: SkillLifecycleActionName, reason?: string, token?: string): Promise<SkillManagementSummary>;
@@ -361,6 +368,7 @@ export interface SafeApiError extends Error {
 
 export function createRegistryClient(baseUrl = defaultApiBaseUrl(), fetchImpl: typeof fetch = fetch, token?: string): RegistryClient {
   const root = baseUrl.replace(/\/+$/, "");
+  const cookieSessionHeaders = { "x-myskills-session-response": "cookie" };
   return {
     async searchSkills(query: string) {
       const params = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
@@ -387,6 +395,7 @@ export function createRegistryClient(baseUrl = defaultApiBaseUrl(), fetchImpl: t
       return requestJson<LoginResult>(fetchImpl, `${root}/v1/auth/login`, {
         method: "POST",
         body: input,
+        headers: cookieSessionHeaders,
       });
     },
     async registerWithInvitation(input) {
@@ -420,6 +429,7 @@ export function createRegistryClient(baseUrl = defaultApiBaseUrl(), fetchImpl: t
       return requestJson<SessionResult>(fetchImpl, `${root}/v1/auth/mfa/verify`, {
         method: "POST",
         body,
+        headers: cookieSessionHeaders,
       });
     },
     async getMe(overrideToken) {
@@ -666,15 +676,32 @@ export function createRegistryClient(baseUrl = defaultApiBaseUrl(), fetchImpl: t
       );
       return body.submissions;
     },
-    async performReviewAction(submissionId, action, reason, overrideToken) {
+    async getReviewSubmissionBundle(submissionId, platform, overrideToken) {
+      const query = platform?.trim() ? `?platform=${encodeURIComponent(platform.trim())}` : "";
+      const response = await requestJsonWithHeaders<SkillPackageBundle>(
+        fetchImpl,
+        `${root}/v1/review/submissions/${encodeURIComponent(submissionId)}/bundle${query}`,
+        { token: overrideToken ?? token },
+      );
+      const artifactSha256 = response.headers.get("x-myskills-artifact-sha256") ?? "";
+      if (!/^[a-f0-9]{64}$/.test(artifactSha256)) {
+        throw new Error("Review bundle response is missing artifact hash.") as SafeApiError;
+      }
+      return {
+        artifactSha256,
+        payload: response.body,
+      };
+    },
+    async performReviewAction(input, overrideToken) {
       const body = await requestJson<{ submission: ReviewActionResult }>(
         fetchImpl,
-        `${root}/v1/review/submissions/${encodeURIComponent(submissionId)}/actions`,
+        `${root}/v1/review/submissions/${encodeURIComponent(input.submissionId)}/actions`,
         {
           method: "POST",
           body: {
-            action,
-            ...(reason?.trim() ? { reason: reason.trim() } : {}),
+            action: input.action,
+            ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}),
+            ...(input.artifactSha256 ? { artifactSha256: input.artifactSha256 } : {}),
           },
           token: overrideToken ?? token,
         },
@@ -906,10 +933,20 @@ export function safeTeamErrorMessage(error: unknown): string {
 
 async function requestJson<T>(fetchImpl: typeof fetch, url: string, options: {
   body?: unknown;
+  headers?: Record<string, string>;
   method?: "GET" | "POST" | "PUT" | "DELETE";
   token?: string;
 } = {}): Promise<T> {
-  const headers: Record<string, string> = { accept: "application/json" };
+  return (await requestJsonWithHeaders<T>(fetchImpl, url, options)).body;
+}
+
+async function requestJsonWithHeaders<T>(fetchImpl: typeof fetch, url: string, options: {
+  body?: unknown;
+  headers?: Record<string, string>;
+  method?: "GET" | "POST" | "PUT" | "DELETE";
+  token?: string;
+} = {}): Promise<{ body: T; headers: Headers }> {
+  const headers: Record<string, string> = { accept: "application/json", ...options.headers };
   if (options.body !== undefined) {
     headers["content-type"] = "application/json";
   }
@@ -918,6 +955,7 @@ async function requestJson<T>(fetchImpl: typeof fetch, url: string, options: {
   }
   const response = await fetchImpl(url, {
     method: options.method,
+    credentials: "include",
     headers,
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
@@ -929,7 +967,7 @@ async function requestJson<T>(fetchImpl: typeof fetch, url: string, options: {
     error.code = safeResponseCode(body);
     throw error;
   }
-  return body as T;
+  return { body: body as T, headers: response.headers };
 }
 
 function safeResponseCode(body: Record<string, unknown>): string {

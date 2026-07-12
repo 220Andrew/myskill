@@ -92,13 +92,16 @@ services:
       TOTP_ISSUER: ${TOTP_ISSUER:-MySkills}
       APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL}
       ALLOWED_WEB_ORIGINS: ${ALLOWED_WEB_ORIGINS:?set ALLOWED_WEB_ORIGINS}
-      AUTH_NOTIFICATION_MODE: smtp
-      SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      AUTH_NOTIFICATION_MODE: ${AUTH_NOTIFICATION_MODE:-smtp}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
       SMTP_TLS_REJECT_UNAUTHORIZED: ${SMTP_TLS_REJECT_UNAUTHORIZED:-true}
-      SMTP_FROM: ${SMTP_FROM:?set SMTP_FROM}
+      SMTP_FROM: ${SMTP_FROM:-}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       ARTIFACT_STORAGE_MODE: s3
@@ -123,6 +126,8 @@ services:
       target: web
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:?set VITE_API_BASE_URL}
+    environment:
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
     restart: unless-stopped
     depends_on:
       api:

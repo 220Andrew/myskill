@@ -25,7 +25,7 @@ The alpha explicitly excludes business-critical production guarantees. API contr
 
 - `npm run check` passes from this repo.
 - `npm run test:postgres` passes against a disposable Postgres database to cover migration-backed auth flows.
-- `npm run check:alpha-release` passes.
+- `npm run check:prerelease` passes.
 - Fresh clone can install dependencies, run checks, validate and scan the example package, and create release artifacts.
 - `SECURITY.md`, `LICENSE`, README, release docs, threat model, and roadmap are public-safe.
 - GitHub private vulnerability reporting is enabled before the public alpha is announced or tagged.

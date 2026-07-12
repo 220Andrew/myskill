@@ -12,7 +12,7 @@ Implemented:
 - metadata-only detail panel that does not fetch package bundle content during normal render
 - CLI export guidance derived from the selected release and platform
 - email/password login, MFA challenge completion, current-user refresh, and logout
-- session-aware API client calls that forward the active bearer token when present
+- session-aware API client calls that use credentialed `myskills_session` cookie requests
 - authenticated author package submission via `.zip` archive upload to `POST /v1/submissions`
 - author submission listing, export, and withdrawal controls
 - maintainer review dashboard for metadata-only review queue, approval, requested changes, rejection, and publication actions

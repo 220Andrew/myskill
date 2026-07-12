@@ -239,6 +239,7 @@ export const skillVersions = pgTable("skill_versions", {
   lifecycleStatus: skillLifecycleStatus("lifecycle_status").notNull().default("submitted"),
   reviewStatus: reviewStatus("review_status").notNull().default("unreviewed"),
   securityStatus: securityStatus("security_status").notNull().default("not-run"),
+  approvedArtifactSha256: text("approved_artifact_sha256"),
   publishedAt: timestamp("published_at", { withTimezone: true }),
   lifecycleReason: text("lifecycle_reason").notNull().default(""),
   lifecycleUpdatedAt: timestamp("lifecycle_updated_at", { withTimezone: true }),
@@ -246,6 +247,9 @@ export const skillVersions = pgTable("skill_versions", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("skill_versions_lifecycle_idx").on(table.lifecycleStatus),
+  index("skill_versions_review_queue_idx")
+    .on(table.createdAt)
+    .where(sql`${table.reviewStatus} IN ('unreviewed', 'changes-requested') OR (${table.reviewStatus} = 'approved' AND ${table.publishedAt} IS NULL)`),
   unique().on(table.skillId, table.version),
 ]);
 
@@ -267,7 +271,7 @@ export const skillArtifacts = pgTable("skill_artifacts", {
   contentType: text("content_type").notNull(),
   payload: jsonb("payload").notNull().default({ files: [] }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [index("skill_artifacts_skill_version_idx").on(table.skillVersionId)]);
 
 export const skillTags = pgTable("skill_tags", {
   skillId: uuid("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),
@@ -299,7 +303,7 @@ export const scanRuns = pgTable("scan_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [index("scan_runs_skill_version_idx").on(table.skillVersionId)]);
 
 export const scanFindings = pgTable("scan_findings", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -309,7 +313,7 @@ export const scanFindings = pgTable("scan_findings", {
   message: text("message").notNull(),
   path: text("path"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => [index("scan_findings_scan_run_idx").on(table.scanRunId)]);
 
 export const jobs = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),

@@ -1,6 +1,6 @@
 # Release Process
 
-Version: 0.1.0-beta.1
+Version: 0.1.0-beta.2
 Last updated: 2026-06-30
 
 This repo is prepared for a responsible public beta once the checklist in [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md) passes. Beta releases are still prerelease software, but they should have a tested first-run path, documented compatibility, support boundaries, upgrade expectations, and release notes.
@@ -14,6 +14,7 @@ Before creating a release tag:
 - Confirm `package.json` has the intended version.
 - Confirm the worktree is clean.
 - Run `npm run check`.
+- Run `npm run check:prerelease` directly if release docs, support policy, or public readiness files changed and you want a narrower gate before the full check.
 - Run `npm run test:postgres` against a disposable Postgres database.
 - Run `npm run release:artifacts`.
 - Review the generated `dist/release/release-metadata.json` and `dist/release/SHA256SUMS`.
@@ -25,6 +26,7 @@ Before creating a release tag:
 
 ```bash
 npm run check
+npm run check:prerelease
 TEST_DATABASE_URL=postgres://myskills_test:myskills_test@localhost:5432/myskills_test npm run test:postgres
 npm run release:artifacts
 ```
@@ -47,7 +49,7 @@ git tag "v${VERSION}"
 git push origin "v${VERSION}"
 ```
 
-The GitHub release workflow runs on `v*.*.*` tags. It installs the repo-declared npm version, checks that the pushed tag matches `package.json`, runs `npm run check`, creates artifacts with `--require-tag`, builds the API, web, and HTTP MCP Docker targets, and uploads the release artifact bundle.
+The GitHub release workflow runs on `v*.*.*` tags. It installs the repo-declared npm version, checks that the pushed tag matches `package.json`, runs `npm run check`, installs Chromium for Playwright, runs web browser E2E, runs Postgres integration tests against a disposable service database, creates artifacts with `--require-tag`, builds the API, web, and HTTP MCP Docker targets, and uploads the release artifact bundle.
 
 The workflow does not publish npm packages, create a GitHub Release, or push container images yet. Those should be enabled after the business-safe release publishing policy is decided.
 
@@ -61,11 +63,11 @@ Before a beta release:
 - Draft GitHub release notes from a file and publish with `--notes-file` or the GitHub release UI.
 - Keep npm publishing explicit and separate from the GitHub source/artifact release unless trusted publishing has been configured.
 
-## CLI npm Alpha
+## CLI npm Dist-Tag
 
-The CLI alpha package is published as `@jarel/myskills` under the `alpha` npm dist-tag. Keep installation examples pinned to `@alpha` until a stable CLI release exists, and verify npm dist-tags before and after every alpha publish because `latest` can lag behind the alpha line.
+The CLI package is beta-versioned in source, but npm installation examples remain pinned to the `alpha` dist-tag until a beta dist-tag and publishing policy are configured. Verify npm dist-tags before and after every prerelease publish because `latest` can lag behind prerelease lines.
 
-Before publishing a CLI alpha:
+Before publishing a CLI prerelease:
 
 - Run `npm run check`.
 - Run `npm view @jarel/myskills version dist-tags`.

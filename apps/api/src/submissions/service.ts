@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { AppError } from "@myskills-app/core";
 import {
   hasBlockingFindings,
@@ -18,6 +18,7 @@ import type {
   ReleaseLifecycleAction,
   ReviewAction,
   ReviewActionResult,
+  ReviewSubmissionBundle,
   ReviewSubmissionSummary,
   SkillLifecycleAction,
   SkillManagementSummary,
@@ -30,6 +31,7 @@ import type {
   UserSubmissionBundle,
   UserSubmissionSummary,
 } from "./types.js";
+import { artifactPayloadSha256 } from "./artifact-hash.js";
 
 const PACKAGE_CONTENT_TYPE = "application/vnd.myskills-app.package+json";
 
@@ -86,6 +88,31 @@ export class SubmissionService {
     return this.store.listReviewSubmissions();
   }
 
+  async getReviewSubmissionBundle(input: { actor: SubmissionActor; submissionId: string; platform?: string }): Promise<ReviewSubmissionBundle | null> {
+    if (!canReview(input.actor.roles)) {
+      await this.store.recordReviewDenied({
+        actorId: input.actor.id,
+        action: "review.artifact.bundle",
+        submissionId: input.submissionId,
+        reason: "review_role_required",
+      });
+      throw new AppError("Review requires maintainer permissions.", "REVIEW_ROLE_REQUIRED", 403);
+    }
+    const bundle = await this.store.getReviewSubmissionBundle({
+      submissionId: input.submissionId,
+      platform: input.platform,
+    });
+    await this.store.recordArtifactAccess({
+      actorId: input.actor.id,
+      slug: bundle?.slug ?? "unknown",
+      version: bundle?.version ?? "unknown",
+      platform: input.platform,
+      decision: bundle ? "allow" : "deny",
+      reason: bundle ? "review_preview" : "not_reviewable_or_missing",
+    });
+    return bundle;
+  }
+
   async listUserSubmissions(actor: SubmissionActor): Promise<UserSubmissionSummary[]> {
     return this.store.listUserSubmissions(actor.id);
   }
@@ -125,6 +152,7 @@ export class SubmissionService {
     actor: SubmissionActor;
     submissionId: string;
     action: ReviewAction;
+    artifactSha256?: string;
     reason?: string;
   }): Promise<ReviewActionResult> {
     if (!canReview(input.actor.roles)) {
@@ -138,9 +166,13 @@ export class SubmissionService {
     }
 
     if (input.action === "approve") {
+      if (!input.artifactSha256) {
+        throw new AppError("Approval artifact hash is required.", "APPROVAL_ARTIFACT_HASH_REQUIRED", 400);
+      }
       return this.store.approveSubmission({
         actorId: input.actor.id,
         submissionId: input.submissionId,
+        artifactSha256: input.artifactSha256,
         reason: input.reason,
       });
     }
@@ -265,7 +297,7 @@ function canonicalManifest(manifest: SkillManifest): string {
 function artifactMetadata(files: PackageInputFile[]): StoredSubmission["artifact"] {
   const artifactPayload = canonicalArtifactPayload(files);
   const payload = JSON.stringify(artifactPayload);
-  const sha256 = createHash("sha256").update(payload).digest("hex");
+  const sha256 = artifactPayloadSha256(artifactPayload);
   return {
     storageKey: `submissions/${randomUUID()}.json`,
     sha256,

@@ -1,6 +1,7 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 export interface ArtifactObjectStorage {
+  // Artifact keys are immutable: implementations must fail rather than overwrite an existing key.
   putObject(input: {
     key: string;
     body: string;
@@ -20,6 +21,9 @@ export class MemoryArtifactObjectStorage implements ArtifactObjectStorage {
   private objects = new Map<string, { body: string; contentType: string; sha256: string }>();
 
   async putObject(input: { key: string; body: string; contentType: string; sha256: string }): Promise<void> {
+    if (this.objects.has(input.key)) {
+      throw new Error("Artifact object already exists.");
+    }
     this.objects.set(input.key, {
       body: input.body,
       contentType: input.contentType,
@@ -55,6 +59,7 @@ export class S3ArtifactObjectStorage implements ArtifactObjectStorage {
       Body: input.body,
       ContentType: input.contentType,
       ContentLength: Buffer.byteLength(input.body),
+      IfNoneMatch: "*",
       Metadata: {
         sha256: input.sha256,
       },

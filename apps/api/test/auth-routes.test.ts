@@ -238,6 +238,56 @@ test("pending accounts cannot login", async (t) => {
   assert.equal(response.json().error.code, "ACCOUNT_NOT_ACTIVE");
 });
 
+test("trusted proxy configuration isolates auth rate limits by forwarded client IP", async (t) => {
+  const passwordHash = await hashPassword("correct horse battery staple");
+  async function attempt(app: ReturnType<typeof buildApp>, forwardedFor: string) {
+    return app.inject({
+      method: "POST",
+      url: "/v1/auth/login",
+      remoteAddress: "127.0.0.1",
+      headers: { "x-forwarded-for": forwardedFor },
+      payload: {
+        email: "active@example.com",
+        password: "wrong password",
+      },
+    });
+  }
+  function authStore() {
+    const store = new MemoryAuthStore("closed");
+    store.addUser({
+      id: "proxy-user",
+      email: "active@example.com",
+      name: "Active User",
+      status: "active",
+      emailVerifiedAt: new Date(),
+      passwordHash,
+    });
+    return store;
+  }
+
+  const sharedProxyBucketApp = buildApp({
+    skillRepository: emptySkillRepository(),
+    authService: new AuthService(authStore(), {
+      loginLimiter: new MemoryAuthRateLimiter({ maxAttempts: 1, windowMs: 60_000 }),
+    }),
+  });
+  t.after(() => sharedProxyBucketApp.close());
+  assert.equal((await attempt(sharedProxyBucketApp, "203.0.113.10")).statusCode, 401);
+  const sharedBucket = await attempt(sharedProxyBucketApp, "203.0.113.11");
+  assert.equal(sharedBucket.statusCode, 429);
+
+  const trustedProxyApp = buildApp({
+    skillRepository: emptySkillRepository(),
+    authService: new AuthService(authStore(), {
+      loginLimiter: new MemoryAuthRateLimiter({ maxAttempts: 1, windowMs: 60_000 }),
+    }),
+    trustProxy: "127.0.0.1",
+  });
+  t.after(() => trustedProxyApp.close());
+  assert.equal((await attempt(trustedProxyApp, "203.0.113.10")).statusCode, 401);
+  assert.equal((await attempt(trustedProxyApp, "203.0.113.11")).statusCode, 401);
+});
+
 test("active verified accounts can login, call me, and logout", async (t) => {
   const authStore = new MemoryAuthStore("closed");
   const passwordHash = await hashPassword("correct horse battery staple");
@@ -271,6 +321,10 @@ test("active verified accounts can login, call me, and logout", async (t) => {
   assert.equal(login.json().mfaRequired, false);
   assert.equal(login.json().user.email, "active@example.com");
   assert.equal(login.json().user.mfaVerified, false);
+  const sessionCookie = firstSetCookie(login.headers["set-cookie"], "myskills_session");
+  assert.match(sessionCookie, /HttpOnly/);
+  assert.match(sessionCookie, /Path=\//);
+  assert.match(sessionCookie, /SameSite=Lax/);
 
   const me = await app.inject({
     method: "GET",
@@ -281,12 +335,23 @@ test("active verified accounts can login, call me, and logout", async (t) => {
   assert.equal(me.json().user.id, "user-active");
   assert.deepEqual(me.json().user.roles, ["user", "author"]);
 
+  const meFromCookie = await app.inject({
+    method: "GET",
+    url: "/v1/me",
+    headers: { cookie: sessionCookie.split(";")[0] },
+  });
+  assert.equal(meFromCookie.statusCode, 200);
+  assert.equal(meFromCookie.json().user.id, "user-active");
+
   const logout = await app.inject({
     method: "POST",
     url: "/v1/auth/logout",
-    headers: { authorization: `Bearer ${token}` },
+    headers: { cookie: sessionCookie.split(";")[0] },
   });
   assert.equal(logout.statusCode, 204);
+  const clearedCookie = firstSetCookie(logout.headers["set-cookie"], "myskills_session");
+  assert.match(clearedCookie, /Max-Age=0/);
+  assert.match(clearedCookie, /HttpOnly/);
 
   const revoked = await app.inject({
     method: "GET",
@@ -294,6 +359,48 @@ test("active verified accounts can login, call me, and logout", async (t) => {
     headers: { authorization: `Bearer ${token}` },
   });
   assert.equal(revoked.statusCode, 401);
+});
+
+test("browser cookie session mode omits bearer tokens from login responses", async (t) => {
+  const authStore = new MemoryAuthStore("closed");
+  const passwordHash = await hashPassword("correct horse battery staple");
+  authStore.addUser({
+    id: "browser-session-user",
+    email: "browser-session@example.com",
+    name: "Browser Session",
+    status: "active",
+    emailVerifiedAt: new Date(),
+    roles: ["user"],
+    passwordHash,
+  });
+  const app = buildApp({
+    skillRepository: emptySkillRepository(),
+    authService: new AuthService(authStore),
+  });
+  t.after(() => app.close());
+
+  const login = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    headers: { "x-myskills-session-response": "cookie" },
+    payload: {
+      email: "browser-session@example.com",
+      password: "correct horse battery staple",
+    },
+  });
+
+  assert.equal(login.statusCode, 200);
+  assert.equal(login.json().token, undefined);
+  assert.equal(login.json().mfaRequired, false);
+  const sessionCookie = firstSetCookie(login.headers["set-cookie"], "myskills_session");
+
+  const me = await app.inject({
+    method: "GET",
+    url: "/v1/me",
+    headers: { cookie: sessionCookie.split(";")[0] },
+  });
+  assert.equal(me.statusCode, 200);
+  assert.equal(me.json().user.id, "browser-session-user");
 });
 
 test("password reset requests are generic and successful reset revokes existing credentials", async (t) => {
@@ -696,6 +803,17 @@ test("MFA reset replaces old TOTP factors and removal revokes credentials", asyn
   });
   assert.equal(verified.statusCode, 200);
   const verifiedSession = verified.json().token;
+  const verifiedCookie = firstSetCookie(verified.headers["set-cookie"], "myskills_session");
+  assert.match(verifiedCookie, /HttpOnly/);
+  assert.match(verifiedCookie, /SameSite=Lax/);
+
+  const mfaMeFromCookie = await app.inject({
+    method: "GET",
+    url: "/v1/me",
+    headers: { cookie: verifiedCookie.split(";")[0] },
+  });
+  assert.equal(mfaMeFromCookie.statusCode, 200);
+  assert.equal(mfaMeFromCookie.json().user.mfaVerified, true);
 
   const secondEnrollment = await enrollTotp(app, verifiedSession);
   await confirmTotp(app, verifiedSession, secondEnrollment);
@@ -993,6 +1111,7 @@ test("MFA-enabled users can complete login with TOTP", async (t) => {
   const verified = await app.inject({
     method: "POST",
     url: "/v1/auth/mfa/verify",
+    headers: { "x-myskills-session-response": "cookie" },
     payload: {
       challengeToken: login.json().challengeToken,
       code: generateTotpCode(enrollment.secret),
@@ -1002,6 +1121,7 @@ test("MFA-enabled users can complete login with TOTP", async (t) => {
   assert.equal(login.statusCode, 200);
   assert.equal(login.json().mfaRequired, true);
   assert.equal(verified.statusCode, 200);
+  assert.equal(verified.json().token, undefined);
   assert.equal(verified.json().user.mfaVerified, true);
 });
 
@@ -1341,4 +1461,11 @@ async function confirmTotp(
   return {
     recoveryCodes: response.json().mfa.recoveryCodes,
   };
+}
+
+function firstSetCookie(header: string | string[] | number | undefined, name: string): string {
+  const values = Array.isArray(header) ? header : typeof header === "string" ? [header] : [];
+  const cookie = values.find((value) => value.startsWith(`${name}=`));
+  assert.equal(typeof cookie, "string");
+  return cookie;
 }

@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyServerOptions } from "fastify";
 import { AppError, type SharingSettings, type SkillRepository, type VisibilityScope } from "@myskills-app/core";
 import {
   MAX_PACKAGE_ARCHIVE_BYTES,
@@ -45,17 +45,26 @@ import type {
 import type { SubmissionService } from "./submissions/service.js";
 import type { TeamService } from "./teams/service.js";
 
+const SESSION_COOKIE_NAME = "myskills_session";
+const COOKIE_SESSION_RESPONSE_HEADER = "x-myskills-session-response";
+const REVIEW_ARTIFACT_HASH_HEADER = "x-myskills-artifact-sha256";
+type TrustProxyOption = NonNullable<FastifyServerOptions["trustProxy"]>;
+
 export interface BuildAppOptions {
   skillRepository: SkillRepository;
   authService?: AuthService;
   submissionService?: SubmissionService;
   teamService?: TeamService;
   allowedOrigins?: string[];
+  trustProxy?: TrustProxyOption;
   logger?: boolean;
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify({
+    logger: options.logger ?? false,
+    ...(options.trustProxy !== undefined ? { trustProxy: options.trustProxy } : {}),
+  });
   const allowedOrigins = options.allowedOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000"];
 
   app.addHook("onRequest", async (request, reply) => {
@@ -63,9 +72,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     const origin = request.headers.origin;
     if (typeof origin === "string" && allowedOrigins.includes(origin)) {
       reply.header("access-control-allow-origin", origin);
+      reply.header("access-control-allow-credentials", "true");
       reply.header("vary", "Origin");
       reply.header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS");
-      reply.header("access-control-allow-headers", "authorization,content-type");
+      reply.header("access-control-allow-headers", `authorization,content-type,${COOKIE_SESSION_RESPONSE_HEADER}`);
+      reply.header("access-control-expose-headers", REVIEW_ARTIFACT_HASH_HEADER);
     }
     if (request.method === "OPTIONS") {
       return reply.code(204).send();
@@ -126,7 +137,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   app.get("/v1/skills", async (request) => {
     const query = parseQuery(request.query);
-    const user = await authenticateOptionalRegistryReader(options.authService, request.headers.authorization);
+    const user = await authenticateOptionalRegistryReader(options.authService, requestAuthorization(request));
     const skills = await options.skillRepository.searchVisibleSkills({
       query: query.q,
       limit: query.limit,
@@ -139,7 +150,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateOptionalActor(options.authService, request.headers.authorization, "skills:read");
+    const actor = await authenticateOptionalActor(options.authService, requestAuthorization(request), "skills:read");
     return {
       releases: await options.submissionService.listSkillReleases({
         slug: parseSlugParam(request.params),
@@ -153,7 +164,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
     const params = parseReleaseParams(request.params);
-    const user = await authenticateOptionalRegistryReader(options.authService, request.headers.authorization);
+    const user = await authenticateOptionalRegistryReader(options.authService, requestAuthorization(request));
     const release = await options.submissionService.getPublicRelease({
       ...params,
       actorId: user?.id ?? null,
@@ -175,7 +186,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     }
     const params = parseReleaseParams(request.params);
     const query = parseBundleQuery(request.query);
-    const user = await authenticateOptionalRegistryReader(options.authService, request.headers.authorization);
+    const user = await authenticateOptionalRegistryReader(options.authService, requestAuthorization(request));
     const bundle = await options.submissionService.getPublicBundle({
       ...params,
       platform: query.platform,
@@ -196,7 +207,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   app.get("/v1/skills/:slug", async (request, reply) => {
     const slug = parseSlugParam(request.params);
-    const user = await authenticateOptionalRegistryReader(options.authService, request.headers.authorization);
+    const user = await authenticateOptionalRegistryReader(options.authService, requestAuthorization(request));
     const skill = await options.skillRepository.getVisibleSkillBySlug(slug, user?.id ?? null);
     if (!skill) {
       return reply.code(404).send({
@@ -216,7 +227,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "review:write", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:write", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -241,7 +252,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "review:write", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:write", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -266,7 +277,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "review:write", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:write", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -289,9 +300,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     requireMfaForPrivilegedSession(user);
     return {
@@ -306,9 +317,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     requireMfaForPrivilegedSession(user);
     return {
@@ -334,14 +345,18 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return reply.code(202).send(result);
   });
 
-  app.post("/v1/auth/login", async (request) => {
+  app.post("/v1/auth/login", async (request, reply) => {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    return options.authService.login({
+    const result = await options.authService.login({
       ...parseLoginInput(request.body),
       ip: request.ip,
     });
+    if (!result.mfaRequired) {
+      setSessionCookie(reply, result.token, result.expiresAt);
+    }
+    return cookieSessionResponse(request, result);
   });
 
   app.post("/v1/auth/email-verification/request", async (request, reply) => {
@@ -396,20 +411,23 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     });
   });
 
-  app.post("/v1/auth/mfa/verify", async (request) => {
+  app.post("/v1/auth/mfa/verify", async (request, reply) => {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    return options.authService.verifyMfaChallenge({
+    const result = await options.authService.verifyMfaChallenge({
       ...parseVerifyMfaChallengeInput(request.body),
       ip: request.ip,
     });
+    setSessionCookie(reply, result.token, result.expiresAt);
+    return cookieSessionResponse(request, result);
   });
 
   app.post("/v1/auth/logout", async (request, reply) => {
     if (options.authService) {
-      await options.authService.logout(request.headers.authorization);
+      await options.authService.logout(requestAuthorization(request));
     }
+    clearSessionCookie(reply);
     return reply.code(204).send();
   });
 
@@ -417,9 +435,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return options.authService.changePassword(user, {
       ...parseChangePasswordInput(request.body),
@@ -431,9 +449,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const result = await options.authService.requestEmailChange(user, {
       ...parseEmailChangeRequestInput(request.body),
@@ -446,9 +464,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { mfa: await options.authService.getMfaStatus(user) };
   });
@@ -457,9 +475,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const enrollment = await options.authService.startTotpEnrollment(user, parseStartTotpEnrollmentInput(request.body));
     return reply.code(201).send({ enrollment });
@@ -469,9 +487,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { mfa: await options.authService.confirmTotpEnrollment(user, parseConfirmTotpEnrollmentInput(request.body)) };
   });
@@ -480,9 +498,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { mfa: await options.authService.disableTotpMfa(user, parseDisableTotpMfaInput(request.body)) };
   });
@@ -491,9 +509,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { tokens: await options.authService.listApiTokens(user) };
   });
@@ -502,9 +520,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const token = await options.authService.createApiToken(user, parseCreateApiTokenInput(request.body));
     return reply.code(201).send({ token });
@@ -514,9 +532,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const token = await options.authService.revokeApiToken(user, parseTokenIdParam(request.params));
     return { token };
@@ -526,9 +544,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { registration: await options.authService.getRegistrationSettings(user) };
   });
@@ -537,9 +555,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       registration: await options.authService.updateRegistrationSettings(
@@ -553,9 +571,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const invitation = await options.authService.createRegistrationInvitation(
       user,
@@ -568,9 +586,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     if (!isAdminResponseUser(user)) {
       return reply.code(403).send({
@@ -588,9 +606,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     requireMfaForPrivilegedSession(user);
     return {
@@ -605,9 +623,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { providers: await options.authService.listAdminProviderConfigs(user) };
   });
@@ -616,9 +634,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       provider: await options.authService.upsertAdminProviderConfig(
@@ -632,9 +650,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { users: await options.authService.listAdminUsers(user) };
   });
@@ -643,9 +661,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       user: await options.authService.performAdminUserAction(
@@ -659,9 +677,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       user: await options.authService.updateAdminUserRoles(
@@ -675,9 +693,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { tokens: await options.authService.listAdminApiTokens(user) };
   });
@@ -686,9 +704,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { token: await options.authService.revokeAdminApiToken(user, parseTokenIdParam(request.params)) };
   });
@@ -697,15 +715,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return { events: await options.authService.listAdminAuditEvents(user, parseAdminAuditQuery(request.query)) };
   });
 
   app.get("/v1/me", async (request, reply) => {
-    const context = await options.authService?.authenticateRequest(request.headers.authorization);
+    const context = await options.authService?.authenticateRequest(requestAuthorization(request));
     if (context) {
       requireScope(context, "profile:read");
       return { user: context.user };
@@ -725,9 +743,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.teamService) {
       throw new AppError("Team service is not configured.", "TEAM_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return options.teamService.listDashboard({ id: user.id, email: user.email });
   });
@@ -739,9 +757,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.teamService) {
       throw new AppError("Team service is not configured.", "TEAM_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const team = await options.teamService.createTeam({
       actor: { id: user.id, email: user.email },
@@ -758,9 +776,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.teamService) {
       throw new AppError("Team service is not configured.", "TEAM_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const invitation = await options.teamService.inviteMember({
       actor: { id: user.id, email: user.email },
@@ -778,9 +796,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.teamService) {
       throw new AppError("Team service is not configured.", "TEAM_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       invitation: await options.teamService.acceptInvitation({
@@ -795,9 +813,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       teams: await options.skillRepository.listTeamSkillGroups({
@@ -811,13 +829,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
-    const context = await options.authService.authenticateRequest(request.headers.authorization);
+    const context = await options.authService.authenticateRequest(requestAuthorization(request));
     if (!context) {
       await options.authService.recordMcpSessionDecision({
         context: null,
         credentialKind: "none",
         decision: "deny",
-        reason: hasBearerAuthorization(request.headers.authorization) ? "invalid_bearer" : "missing_bearer",
+        reason: hasBearerAuthorization(requestAuthorization(request)) ? "invalid_bearer" : "missing_bearer",
       });
       return reply.code(401).send({
         error: {
@@ -878,9 +896,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     return {
       submissions: await options.submissionService.listUserSubmissions({
@@ -897,9 +915,9 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const user = await authenticateSessionUser(options.authService, request.headers.authorization);
+    const user = await authenticateSessionUser(options.authService, requestAuthorization(request));
     if (!user) {
-      return authFailureReply(options.authService, request.headers.authorization, reply);
+      return authFailureReply(options.authService, requestAuthorization(request), reply);
     }
     const bundle = await options.submissionService.getUserSubmissionBundle({
       actor: {
@@ -929,7 +947,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "skills:submit", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "skills:submit", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -954,7 +972,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "skills:submit", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "skills:submit", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -979,7 +997,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "review:read", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:read", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -992,6 +1010,41 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     return { submissions };
   });
 
+  app.get("/v1/review/submissions/:id/bundle", async (request, reply) => {
+    if (!options.authService) {
+      throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
+    }
+    if (!options.submissionService) {
+      throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
+    }
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:read", { mfaRequired: true });
+    if (!actor) {
+      return reply.code(401).send({
+        error: {
+          code: "AUTHENTICATION_REQUIRED",
+          message: "Authentication is required.",
+        },
+      });
+    }
+    const bundle = await options.submissionService.getReviewSubmissionBundle({
+      actor,
+      submissionId: parseSubmissionIdParam(request.params),
+      ...parseBundleQuery(request.query),
+    });
+    if (!bundle) {
+      return reply.code(404).send({
+        error: {
+          code: "SUBMISSION_NOT_FOUND",
+          message: "Submission not found.",
+        },
+      });
+    }
+    return reply
+      .header(REVIEW_ARTIFACT_HASH_HEADER, bundle.artifact.sha256)
+      .type(bundle.artifact.contentType)
+      .send(bundle.payload);
+  });
+
   app.post("/v1/review/submissions/:id/actions", async (request, reply) => {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
@@ -999,7 +1052,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (!options.submissionService) {
       throw new AppError("Submission service is not configured.", "SUBMISSION_SERVICE_UNAVAILABLE", 503);
     }
-    const actor = await authenticateActor(options.authService, request.headers.authorization, "review:write", { mfaRequired: true });
+    const actor = await authenticateActor(options.authService, requestAuthorization(request), "review:write", { mfaRequired: true });
     if (!actor) {
       return reply.code(401).send({
         error: {
@@ -1113,6 +1166,90 @@ function requireScope(context: AuthContext, scope: ApiTokenScope): void {
 
 function hasBearerAuthorization(authorization: string | undefined): boolean {
   return /^Bearer\s+\S+/i.test(authorization?.trim() ?? "");
+}
+
+function requestAuthorization(request: { headers: { authorization?: string | string[]; cookie?: string | string[] } }): string | undefined {
+  const authorization = firstHeader(request.headers.authorization);
+  if (authorization) {
+    return authorization;
+  }
+  const token = sessionCookieToken(request.headers.cookie);
+  return token ? `Bearer ${token}` : undefined;
+}
+
+function cookieSessionResponse<T extends object>(
+  request: { headers: Record<string, string | string[] | undefined> },
+  result: T,
+): T | Omit<T & { token: string }, "token"> {
+  const token = (result as { token?: unknown }).token;
+  if (firstHeader(request.headers[COOKIE_SESSION_RESPONSE_HEADER])?.toLowerCase() !== "cookie" || typeof token !== "string") {
+    return result;
+  }
+  const { token: _token, ...response } = result as T & { token: string };
+  return response;
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value.find((item) => item.trim())?.trim();
+  }
+  return value?.trim() || undefined;
+}
+
+function sessionCookieToken(cookieHeader: string | string[] | undefined): string | null {
+  const header = Array.isArray(cookieHeader) ? cookieHeader.join(";") : cookieHeader;
+  if (!header) {
+    return null;
+  }
+  for (const part of header.split(";")) {
+    const [rawName, ...rawValueParts] = part.trim().split("=");
+    if (rawName !== SESSION_COOKIE_NAME) {
+      continue;
+    }
+    const rawValue = rawValueParts.join("=");
+    if (!rawValue) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(rawValue);
+    } catch {
+      return rawValue;
+    }
+  }
+  return null;
+}
+
+function setSessionCookie(reply: FastifyReply, token: string, expiresAt: string): void {
+  const expires = new Date(expiresAt);
+  const attributes = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Lax",
+  ];
+  if (!Number.isNaN(expires.getTime())) {
+    attributes.push(`Expires=${expires.toUTCString()}`);
+    attributes.push(`Max-Age=${Math.max(0, Math.floor((expires.getTime() - Date.now()) / 1000))}`);
+  }
+  if (process.env.NODE_ENV === "production") {
+    attributes.push("Secure");
+  }
+  reply.header("set-cookie", attributes.join("; "));
+}
+
+function clearSessionCookie(reply: FastifyReply): void {
+  const attributes = [
+    `${SESSION_COOKIE_NAME}=`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Lax",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+  ];
+  if (process.env.NODE_ENV === "production") {
+    attributes.push("Secure");
+  }
+  reply.header("set-cookie", attributes.join("; "));
 }
 
 function parseRegisterInput(input: unknown): RegisterInput {
@@ -1549,16 +1686,31 @@ function submissionResponse(submission: StoredSubmission) {
   };
 }
 
-function parseReviewActionInput(input: unknown): { action: ReviewAction; reason?: string } {
+function parseReviewActionInput(input: unknown): { action: ReviewAction; artifactSha256?: string; reason?: string } {
   const body = parseJsonObject(input);
   const action = requiredString(body.action, "action");
   if (action !== "approve" && action !== "request-changes" && action !== "reject" && action !== "publish") {
     throw new AppError("Unsupported review action.", "INVALID_REVIEW_ACTION", 400);
   }
+  const artifactSha256 = "artifactSha256" in body
+    ? parseArtifactSha256(body.artifactSha256)
+    : undefined;
   return {
     action,
+    artifactSha256,
     reason: optionalString(body.reason, "reason"),
   };
+}
+
+function parseArtifactSha256(input: unknown): string {
+  if (typeof input !== "string" || input.trim() === "") {
+    throw new AppError("Approval artifact hash is required.", "APPROVAL_ARTIFACT_HASH_REQUIRED", 400);
+  }
+  const hash = input.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(hash)) {
+    throw new AppError("Approval artifact hash must be a sha256 hex digest.", "INVALID_ARTIFACT_HASH", 400);
+  }
+  return hash;
 }
 
 function parseSlugParam(input: unknown): string {

@@ -1,11 +1,11 @@
 # Business-Safe Production Release Goal
 
-Version: 0.1.0-alpha.0
-Last updated: 2026-06-04
+Version: 0.1.0-beta.2
+Last updated: 2026-06-30
 
 ## Goal
 
-Turn the public alpha into a business-safe, production-ready open-source release that teams can operate with clear trust boundaries, setup paths, deployment guidance, security posture, auditability, and upgrade expectations.
+Turn the public beta into a business-safe, production-ready open-source release that teams can operate with clear trust boundaries, setup paths, deployment guidance, security posture, auditability, and upgrade expectations.
 
 ## Success Criteria
 
@@ -15,7 +15,7 @@ Turn the public alpha into a business-safe, production-ready open-source release
 - Package submission, scanning, review, publication, artifact delivery, install, update, and rollback have durable integrity checks and audit evidence.
 - Skill evals provide durable behavior, safety, compatibility, and regression evidence for submitted and published versions.
 - API, web, CLI, and MCP enforce the same authorization decisions.
-- Threat-model findings above accepted alpha risk are fixed, tested, or explicitly documented as unsupported.
+- Threat-model findings above accepted beta risk are fixed, tested, or explicitly documented as unsupported.
 - Releases are reproducible and publish the agreed artifacts: source, checksums, optional images, and release notes.
 - Backup, restore, upgrade, rollback, monitoring, logging, and incident-response procedures are documented and rehearsed.
 
@@ -73,5 +73,5 @@ Turn the public alpha into a business-safe, production-ready open-source release
 - `npm run check` passes.
 - Fresh clone and production-like deploy rehearsals pass.
 - Security review and threat model are refreshed after the production hardening work.
-- All public docs describe the supported and unsupported production posture without alpha-only caveats.
+- All public docs describe the supported and unsupported production posture without stale alpha-only caveats.
 - A release candidate tag is cut and the release workflow succeeds.

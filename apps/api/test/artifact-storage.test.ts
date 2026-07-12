@@ -26,6 +26,15 @@ test("memory artifact storage writes and reads exact object text", async () => {
     contentType: PACKAGE_CONTENT_TYPE,
     sha256: createHash("sha256").update(body).digest("hex"),
   });
+  await assert.rejects(
+    () => storage.putObject({
+      key: "submissions/test/0.1.0/artifact.json",
+      body,
+      contentType: PACKAGE_CONTENT_TYPE,
+      sha256: createHash("sha256").update(body).digest("hex"),
+    }),
+    /Artifact object already exists/,
+  );
   await assert.rejects(() => storage.getObject("missing.json"), /Artifact object not found/);
 });
 
@@ -71,6 +80,7 @@ test("S3 artifact storage maps put and get commands without network", async () =
     Body: body,
     ContentType: PACKAGE_CONTENT_TYPE,
     ContentLength: Buffer.byteLength(body),
+    IfNoneMatch: "*",
     Metadata: { sha256 },
   });
   assert.equal(calls[1].name, "GetObjectCommand");

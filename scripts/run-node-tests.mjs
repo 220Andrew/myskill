@@ -11,8 +11,13 @@ const testFiles = collectTests(join(cwd, "test"), config.extensions)
   .sort();
 
 if (testFiles.length === 0) {
-  console.log("No test files found.");
-  process.exit(0);
+  const message = "No test files found.";
+  if (config.allowEmpty) {
+    console.log(`${message} Passing because --allow-empty was set.`);
+    process.exit(0);
+  }
+  console.error(`${message} Use --allow-empty only for intentionally empty suites.`);
+  process.exit(1);
 }
 
 const nodeArgs = [];
@@ -39,6 +44,7 @@ process.exit(result.status ?? 1);
 function parseArgs(args) {
   const config = {
     extensions: [".test.ts"],
+    allowEmpty: false,
     imports: [],
     testConcurrency: null,
   };
@@ -53,6 +59,10 @@ function parseArgs(args) {
     if (arg === "--extensions") {
       config.extensions = readValue(args, index).split(",").map(normalizeExtension);
       index += 1;
+      continue;
+    }
+    if (arg === "--allow-empty") {
+      config.allowEmpty = true;
       continue;
     }
     if (arg === "--test-concurrency") {

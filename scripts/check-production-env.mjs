@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 
 const DEV_AUTH_SECRET = "dev-only-myskills-app-auth-secret-change-before-production";
@@ -19,6 +20,7 @@ requiredUrlOrAbsolutePath("VITE_API_BASE_URL", { https: true });
 rejectExampleValue("APP_BASE_URL");
 rejectExampleValue("VITE_API_BASE_URL");
 validateAllowedOrigins();
+validateTrustProxy();
 validateDatabase();
 validateAuthSecret();
 validateAuthNotifications();
@@ -169,6 +171,54 @@ function validateAllowedOrigins() {
   if (appBaseUrl && origins.length > 0 && !origins.includes(appBaseUrl)) {
     warnings.push("ALLOWED_WEB_ORIGINS does not include APP_BASE_URL; browser auth flows may fail CORS.");
   }
+}
+
+function validateTrustProxy() {
+  const value = stringValue("TRUST_PROXY");
+  if (!value) {
+    warnings.push("TRUST_PROXY is not set. If the API runs behind nginx/Railway, auth rate limits will use the proxy IP.");
+    return;
+  }
+  if (value === "true") {
+    errors.push("TRUST_PROXY=true is too broad for production. Use a hop count or trusted proxy address list.");
+    return;
+  }
+  if (value === "false") {
+    warnings.push("TRUST_PROXY=false disables forwarded client IP handling behind proxies.");
+    return;
+  }
+  if (/^[1-9]\d*$/.test(value)) {
+    return;
+  }
+  const entries = value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0) {
+    errors.push("TRUST_PROXY must be false, a positive hop count, or a comma-separated trusted proxy address list.");
+    return;
+  }
+  for (const entry of entries) {
+    if (!isValidProxyAddress(entry)) {
+      errors.push(`TRUST_PROXY contains an invalid proxy address entry: ${entry}`);
+    }
+  }
+}
+
+function isValidProxyAddress(entry) {
+  const [address, prefix, extra] = entry.split("/");
+  if (!address || extra !== undefined) {
+    return false;
+  }
+  const version = isIP(address);
+  if (version === 0) {
+    return false;
+  }
+  if (prefix === undefined) {
+    return true;
+  }
+  if (!/^\d+$/.test(prefix)) {
+    return false;
+  }
+  const prefixLength = Number.parseInt(prefix, 10);
+  return prefixLength >= 0 && prefixLength <= (version === 4 ? 32 : 128);
 }
 
 function validateAuthNotifications() {

@@ -1,6 +1,6 @@
 # Public Beta Release Goal
 
-Version: 0.1.0-beta.1
+Version: 0.1.0-beta.2
 Last updated: 2026-06-30
 
 ## Goal
@@ -9,7 +9,7 @@ Ship MySkills as a public beta that real external users can install, inspect, se
 
 The beta is still prerelease software. It is not the final business-safe production release.
 
-Target release: `v0.1.0-beta.1`.
+Target release: `v0.1.0-beta.2`.
 
 ## Beta Gate
 
@@ -17,9 +17,10 @@ Before tagging a public beta:
 
 - Worktree is clean and synced with `origin/main`.
 - GitHub CI is green on `main`.
-- `main` is protected by required CI checks.
+- `main` is protected by required CI checks: `check`, `web-e2e`, and `postgres-integration`.
 - Secret scanning, push protection, Dependabot security updates, and private vulnerability reporting are enabled where available.
 - `npm run check` passes.
+- `npm run check:prerelease` passes and requires the beta support, compatibility, upgrade, release, and policy docs.
 - `TEST_DATABASE_URL=... npm run test:postgres` passes against a disposable database.
 - Fresh clone rehearsal passes: install, build/check, migrate, seed, local API/web smoke, example validate/scan, CLI package smoke, and release artifact generation.
 - `npm run release:artifacts` succeeds from a clean checkout.
@@ -41,6 +42,7 @@ Before tagging a public beta:
 
 ```bash
 npm run check
+npm run check:prerelease
 TEST_DATABASE_URL=postgres://myskills_test:myskills_test@localhost:5432/myskills_test npm run test:postgres
 npm run release:artifacts
 ```

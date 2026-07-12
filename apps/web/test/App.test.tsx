@@ -1,5 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { PublicSkill, SkillSharingDetails, TeamSharedSkillGroup } from "@myskills-app/core";
 import { RegistryApp } from "../src/App.js";
@@ -183,7 +184,7 @@ test("platform selection changes CLI export guidance only", async () => {
   assert.equal(client.bundleCalls, 0);
 });
 
-test("login stores a verified session and logout clears it", async () => {
+test("login stores session metadata without persisting bearer tokens and logout clears it", async () => {
   setupDom();
   const client = mockClient();
 
@@ -196,15 +197,17 @@ test("login stores a verified session and logout clears it", async () => {
   await view.findByText("Release Notes Helper");
   assert.equal(window.location.pathname, "/registry");
   assert.equal(document.body.textContent?.includes("web-session-token"), false);
-  assert.equal(JSON.parse(window.localStorage.getItem("myskills-app:web-session") ?? "{}").token, "web-session-token");
+  const stored = JSON.parse(window.localStorage.getItem("myskills-app:web-session") ?? "{}") as Record<string, unknown>;
+  assert.equal("token" in stored, false);
+  assert.equal(stored.expiresAt, "2026-06-04T01:00:00.000Z");
 
   fireEvent.click(view.getByLabelText("Sign out"));
 
-	  await view.findByRole("button", { name: /sign in/i });
-	  assert.equal((view.getByLabelText("Password") as HTMLInputElement).value, "");
-	  assert.equal(window.localStorage.getItem("myskills-app:web-session"), null);
-	  assert.equal(client.logoutCalls, 1);
-	});
+  await view.findByRole("button", { name: /sign in/i });
+  assert.equal((view.getByLabelText("Password") as HTMLInputElement).value, "");
+  assert.equal(window.localStorage.getItem("myskills-app:web-session"), null);
+  assert.equal(client.logoutCalls, 1);
+});
 
 test("login form can request a password reset email", async () => {
   setupDom("http://localhost/login");
@@ -234,7 +237,9 @@ test("MFA login verifies the challenge before storing a session", async () => {
 
   await view.findByText("reader@example.com");
   assert.deepEqual(client.mfaCalls, ["123456"]);
-  assert.equal(JSON.parse(window.localStorage.getItem("myskills-app:web-session") ?? "{}").token, "mfa-session-token");
+  const stored = JSON.parse(window.localStorage.getItem("myskills-app:web-session") ?? "{}") as Record<string, unknown>;
+  assert.equal("token" in stored, false);
+  assert.equal(stored.expiresAt, "2026-06-04T01:00:00.000Z");
 });
 
 test("signed-in users can set up MFA and save recovery codes", async () => {
@@ -420,9 +425,34 @@ test("non-owner admin sessions cannot edit privileged target role controls", asy
   assert.equal((view.getByLabelText("Set author@example.com maintainer role") as HTMLInputElement).disabled, false);
 });
 
-test("maintainer sessions can approve and publish review submissions without bundle content", async () => {
+test("maintainer sessions download an artifact hash before approving review submissions", async (t) => {
   setupDom();
   const client = mockClient({ user: authUser({ email: "maintainer@example.com", roles: ["maintainer"] }) });
+  const expectedArtifactHash = artifactPayloadSha256(defaultReviewBundlePayload());
+  let downloadedBlob: Blob | null = null;
+  const originalCreateObjectURL = URL.createObjectURL;
+  const originalRevokeObjectURL = URL.revokeObjectURL;
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: (blob: Blob) => {
+      downloadedBlob = blob;
+      return "blob:review-artifact";
+    },
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: () => undefined,
+  });
+  t.after(() => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: originalCreateObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: originalRevokeObjectURL,
+    });
+  });
 
   const view = render(<RegistryApp client={client} />);
   fireEvent.input(view.getByLabelText("Email"), { target: { value: "maintainer@example.com" } });
@@ -438,13 +468,20 @@ test("maintainer sessions can approve and publish review submissions without bun
   assert.equal(document.body.textContent?.includes("storageKey"), false);
   assert.equal(document.body.textContent?.includes("Summarize release notes."), false);
   assert.equal(client.bundleCalls, 0);
+  assert.equal((view.getByRole("button", { name: /approve/i }) as HTMLButtonElement).disabled, true);
 
   fireEvent.input(view.getByLabelText("Reason"), { target: { value: "checked" } });
+  fireEvent.click(view.getByRole("button", { name: /download artifact/i }));
+  await waitFor(() => assert.deepEqual(client.reviewBundleCalls, ["submission-1"]));
+  assert.equal(document.body.textContent?.includes("Summarize release notes."), false);
+  assert.notEqual(downloadedBlob, null);
+  const downloadedText = await downloadedBlob!.text();
+  assert.equal(artifactTextSha256(downloadedText), expectedArtifactHash);
   fireEvent.click(view.getByRole("button", { name: /approve/i }));
-  await waitFor(() => assert.deepEqual(client.reviewActions, ["submission-1:approve:checked"]));
+  await waitFor(() => assert.deepEqual(client.reviewActions, [`submission-1:approve:checked:${expectedArtifactHash}`]));
 
   fireEvent.click(view.getByRole("button", { name: /publish/i }));
-  await waitFor(() => assert.deepEqual(client.reviewActions, ["submission-1:approve:checked", "submission-1:publish:"]));
+  await waitFor(() => assert.deepEqual(client.reviewActions, [`submission-1:approve:checked:${expectedArtifactHash}`, "submission-1:publish::"]));
   await view.findByText("Review queue is clear.");
 });
 
@@ -530,6 +567,21 @@ test("malformed stored sessions are ignored before signed-in render", async () =
   assert.equal(window.localStorage.getItem("myskills-app:web-session"), null);
 });
 
+test("legacy token-bearing stored sessions are purged before signed-in render", async () => {
+  setupDom();
+  window.localStorage.setItem("myskills-app:web-session", JSON.stringify({
+    token: "stored-session-token",
+    expiresAt: "2026-06-04T01:00:00.000Z",
+    user: authUser(),
+  }));
+  const client = mockClient();
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByRole("button", { name: /sign in/i });
+  assert.equal(window.localStorage.getItem("myskills-app:web-session"), null);
+});
+
 test("failed login shows auth-specific safe copy", async () => {
   setupDom();
   const client = mockClient({
@@ -561,7 +613,6 @@ function setupDom(url = "http://localhost/registry") {
 function setupAuthenticatedDom(url = "http://localhost/registry", user = authUser()) {
   setupDom(url);
   window.localStorage.setItem("myskills-app:web-session", JSON.stringify({
-    token: "stored-session-token",
     expiresAt: "2026-06-04T01:00:00.000Z",
     user,
   }));
@@ -620,6 +671,7 @@ function mockClient(input: {
     registrationUpdates: AdminRegistrationMode[];
     releaseCalls: string[];
     reviewActions: string[];
+    reviewBundleCalls: string[];
     roleUpdates: string[];
     searchCalls: string[];
     submitCalls: Array<{ filename: string; contentBase64: string }>;
@@ -647,6 +699,7 @@ function mockClient(input: {
     registrationUpdates: [],
     releaseCalls: [],
     reviewActions: [],
+    reviewBundleCalls: [],
     roleUpdates: [],
     searchCalls: [],
     submitCalls: [],
@@ -687,7 +740,6 @@ function mockClient(input: {
         }
         : {
           mfaRequired: false,
-          token: "web-session-token",
           expiresAt: "2026-06-04T01:00:00.000Z",
           user: currentUser,
         };
@@ -719,7 +771,6 @@ function mockClient(input: {
     async verifyMfa(input) {
       client.mfaCalls.push(input.codeOrRecoveryCode);
       return {
-        token: "mfa-session-token",
         expiresAt: "2026-06-04T01:00:00.000Z",
         user: authUser({ mfaVerified: true }),
       };
@@ -870,11 +921,19 @@ function mockClient(input: {
     async listReviewSubmissions() {
       return reviewSubmissions;
     },
-    async performReviewAction(submissionId, action, reason) {
-      client.reviewActions.push(`${submissionId}:${action}:${reason ?? ""}`);
+    async getReviewSubmissionBundle(submissionId) {
+      client.reviewBundleCalls.push(submissionId);
+      const payload = defaultReviewBundlePayload();
+      return {
+        artifactSha256: artifactPayloadSha256(payload),
+        payload,
+      };
+    },
+    async performReviewAction({ submissionId, action, reason, artifactSha256 }) {
+      client.reviewActions.push(`${submissionId}:${action}:${reason ?? ""}:${artifactSha256 ?? ""}`);
       if (action === "approve") {
         reviewSubmissions = reviewSubmissions.map((submission) => (
-          submission.id === submissionId ? { ...submission, reviewStatus: "approved" } : submission
+          submission.id === submissionId ? { ...submission, approvedArtifactSha256: artifactSha256 ?? null, allowedActions: ["publish"], reviewStatus: "approved" } : submission
         ));
         return {
           id: submissionId,
@@ -884,6 +943,7 @@ function mockClient(input: {
           lifecycleStatus: "review",
           reviewStatus: "approved",
           securityStatus: "passed",
+          approvedArtifactSha256: artifactSha256 ?? null,
           publishedAt: null,
         };
       }
@@ -1079,6 +1139,23 @@ function defaultApiTokens(): ApiToken[] {
   }];
 }
 
+function defaultReviewBundlePayload() {
+  return {
+    files: [
+      { path: "skill.json", content: "{\"name\":\"release-notes-helper\"}" },
+      { path: "README.md", content: "Summarize release notes." },
+    ],
+  };
+}
+
+function artifactPayloadSha256(payload: unknown): string {
+  return artifactTextSha256(JSON.stringify(payload));
+}
+
+function artifactTextSha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
 function defaultAdminApiTokens(): AdminApiToken[] {
   return [{
     ...defaultApiTokens()[0]!,
@@ -1172,14 +1249,17 @@ function defaultReviewSubmissions(): ReviewSubmissionSummary[] {
       title: "Release Notes Helper",
       version: "0.1.0",
       visibility: "public",
+      lifecycleStatus: "review",
       reviewStatus: "unreviewed",
       securityStatus: "passed",
+      approvedArtifactSha256: null,
       platforms: [
         { name: "codex", installTarget: "codex-skill", status: "supported" },
         { name: "generic", installTarget: "prompt-pack", status: "supported" },
       ],
       findingCount: 0,
       createdAt: "2026-06-04T00:00:00.000Z",
+      allowedActions: ["approve", "request-changes", "reject"],
     },
   ];
 }

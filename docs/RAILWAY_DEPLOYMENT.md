@@ -1,7 +1,7 @@
 # Railway Deployment
 
-Version: 0.1.0-alpha.0
-Last updated: 2026-06-14
+Version: 0.1.0-beta.2
+Last updated: 2026-06-30
 
 This is the first live deployment shape for `myskills.sh`.
 
@@ -23,7 +23,7 @@ Do not deploy this project into any team or work Railway workspace.
 
 The optional HTTP MCP service is intentionally not part of the first public private-development launch.
 
-`Dockerfile.web` and `Dockerfile.api` are dedicated service variants kept in the repo for a future split-Dockerfile Railway configuration. Keep the root `Dockerfile` web stage aligned with `Dockerfile.web` while Railway reports `/Dockerfile` as the active web build path.
+The root `Dockerfile` contains the active `web`, `api`, and `mcp-http` targets used by this deployment shape.
 
 ## Domains
 
@@ -33,7 +33,7 @@ The optional HTTP MCP service is intentionally not part of the first public priv
 
 The web build must receive `VITE_API_BASE_URL=/api` so browser auth and registry requests stay same-origin on `myskills.sh`.
 The web runtime must receive `API_PROXY_TARGET=https://api.myskills.sh` so nginx forwards `/api/*` to the API service without requiring the user's browser DNS cache to resolve `api.myskills.sh`.
-The API must receive `APP_BASE_URL=https://myskills.sh` and `ALLOWED_WEB_ORIGINS=https://myskills.sh,https://www.myskills.sh`.
+The API must receive `APP_BASE_URL=https://myskills.sh`, `ALLOWED_WEB_ORIGINS=https://myskills.sh,https://www.myskills.sh`, and a bounded `TRUST_PROXY` value so auth rate limits use the forwarded client IP from Railway/nginx.
 
 ## Required Web Variables
 
@@ -59,6 +59,7 @@ Set these in Railway secret/config variables, not in repo files:
 - `TOTP_ISSUER=MySkills`
 - `APP_BASE_URL=https://myskills.sh`
 - `ALLOWED_WEB_ORIGINS=https://myskills.sh,https://www.myskills.sh`
+- `TRUST_PROXY=1`
 - `AUTH_NOTIFICATION_MODE=resend`
 - `RESEND_API_KEY`
 - `RESEND_FROM=MySkills <noreply@jarel.app>`
@@ -76,17 +77,17 @@ SMTP remains supported for self-hosted deployments, but the Railway production d
 
 ## Resend Setup
 
-1. Use the verified `jarel.app` sender domain in Resend for MySkills auth email.
-2. Keep `RESEND_FROM=MySkills <noreply@jarel.app>` in the Railway API service.
+1. Use a verified sender domain in Resend for MySkills auth email.
+2. Keep `RESEND_FROM=MySkills <noreply@your-domain.example>` in the Railway API service.
 3. Create a dedicated send-only Resend API key named `MySkills Railway production`.
-4. Set Railway API variables: `AUTH_NOTIFICATION_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM=MySkills <noreply@jarel.app>`.
-5. Redeploy the `api` service and request a password reset for `jremick@jremick.com` to verify delivery.
+4. Set Railway API variables: `AUTH_NOTIFICATION_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM=MySkills <noreply@your-domain.example>`.
+5. Redeploy the `api` service and request a password reset for the configured owner account to verify delivery.
 
 ## First Owner Bootstrap
 
 Use only for the initial seed, then remove the bootstrap password from Railway variables after the owner account is confirmed.
 
-- `SEED_OWNER_EMAIL=jremick@jremick.com`
+- `SEED_OWNER_EMAIL=owner@your-domain.example`
 - `SEED_OWNER_PASSWORD=<temporary strong password>`
 
 Run:
@@ -98,17 +99,11 @@ node apps/api/dist/db/seed.js
 
 After bootstrap:
 
-1. Sign in as `jremick@jremick.com`.
-2. Enable MFA.
+1. Sign in as the configured `SEED_OWNER_EMAIL`.
+2. Enable MFA for the owner account.
 3. Rotate the bootstrap password.
-4. Keep `SEED_OWNER_PASSWORD` out of the Railway API service.
-
-Current status:
-
-- `jremick@jremick.com` is seeded as the active owner.
-- The bootstrap password is stored in macOS Keychain under service `myskills.sh/seed-owner-password`.
-- `SEED_OWNER_PASSWORD` has been removed from Railway variables after owner login was verified.
-- Admin endpoints require MFA, so MFA enrollment is the next owner-account hardening step.
+4. Remove `SEED_OWNER_PASSWORD` from Railway variables after owner login is verified.
+5. Keep owner account status, credential storage, and MFA progress in private operational notes, not in this public deployment guide.
 
 ## Smoke Checks
 

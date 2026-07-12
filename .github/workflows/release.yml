@@ -12,6 +12,20 @@ jobs:
   release:
     name: Verify Release
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: myskills_test
+          POSTGRES_PASSWORD: myskills_test
+          POSTGRES_USER: myskills_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U myskills_test -d myskills_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -38,6 +52,17 @@ jobs:
       - name: Check
         run: npm run check
 
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run web browser E2E
+        run: npm run test:e2e -w @myskills-app/web
+
+      - name: Run Postgres integration tests
+        env:
+          TEST_DATABASE_URL: postgres://myskills_test:myskills_test@localhost:5432/myskills_test
+        run: npm run test:postgres
+
       - name: Create release artifacts
         run: npm run release:artifacts -- --require-tag --expected-tag "$GITHUB_REF_NAME"
 
@@ -48,7 +73,7 @@ jobs:
         run: docker build --target mcp-http -t myskills-app-mcp-http:${{ github.ref_name }} .
 
       - name: Build web image
-        run: docker build --target web --build-arg VITE_API_BASE_URL=https://api.example.invalid -t myskills-app-web:${{ github.ref_name }} .
+        run: docker build --target web --build-arg VITE_API_BASE_URL=/api -t myskills-app-web:${{ github.ref_name }} .
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4

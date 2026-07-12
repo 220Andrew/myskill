@@ -7,7 +7,7 @@ Last updated: 2026-06-18
 
 API, web, CLI, and MCP must ask the same backend for authorization. No client surface may reimplement access rules as a substitute for server-side decisions.
 
-The current web slice consumes backend API decisions for login, current-user refresh, public skill search, skill detail, release metadata, export guidance, author archive submission, author withdrawal, maintainer review actions, owner/admin lifecycle controls, and owner/admin console operations. It forwards the active bearer token when present, but it must not fetch bundle payloads during metadata browsing/review or reimplement authorization policy in client code.
+The current web slice consumes backend API decisions for login, current-user refresh, public skill search, skill detail, release metadata, export guidance, author archive submission, author withdrawal, maintainer review artifact download, maintainer review actions, owner/admin lifecycle controls, and owner/admin console operations. Browser auth uses token-free login/MFA responses plus credentialed `myskills_session` cookie requests; CLI and API-token flows use explicit bearer credentials. The web app must not fetch public bundle payloads during metadata browsing or reimplement authorization policy in client code.
 
 ## API Surface
 
@@ -29,8 +29,10 @@ Milestone 1 REST endpoints:
 - `GET /v1/skills/:slug/releases/:version/bundle?platform=...`
 - `POST /v1/submissions`
 - `GET /v1/submissions/mine`
+- `GET /v1/submissions/:id/bundle`
 - `POST /v1/submissions/:id/actions`
 - `GET /v1/review/submissions`
+- `GET /v1/review/submissions/:id/bundle?platform=...`
 - `POST /v1/review/submissions/:id/actions`
 - `PUT /v1/skills/:slug`
 - `POST /v1/skills/:slug/actions`
@@ -110,7 +112,8 @@ myskills update [skill]
 myskills rollback <skill>
 myskills submit --path <dir-or-zip>
 myskills review submissions
-myskills review action <submission-id> --action <approve|request-changes|reject|publish> --reason <reason> [--api-url <url>] [--token <token>]
+myskills review bundle <submission-id> [--platform <name>] [--output <file>] [--api-url <url>] [--token <token>]
+myskills review action <submission-id> --action <approve|request-changes|reject|publish> [--artifact-sha256 <hash>] --reason <reason> [--api-url <url>] [--token <token>]
 myskills submissions list
 myskills submissions withdraw <submission-id> --reason <reason> [--api-url <url>] [--token <token>]
 myskills skills edit <skill-slug> [--title <text>] [--summary <text>] [--visibility <scope>] [--tag <tag>] --reason <reason> [--api-url <url>] [--token <token>]

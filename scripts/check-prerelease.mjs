@@ -13,10 +13,19 @@ const root = process.cwd();
 const requiredPaths = [
   "LICENSE",
   "SECURITY.md",
+  "SUPPORT.md",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
   "docs/ALPHA_RELEASE_GOAL.md",
+  "docs/BETA_RELEASE_GOAL.md",
   "docs/BUSINESS_SAFE_RELEASE_GOAL.md",
+  "docs/COMPATIBILITY.md",
   "docs/RELEASE.md",
   "docs/THREAT_MODEL.md",
+  "docs/UPGRADE_POLICY.md",
+  ".github/ISSUE_TEMPLATE/bug_report.yml",
+  ".github/ISSUE_TEMPLATE/feature_request.yml",
+  ".github/pull_request_template.md",
   "examples/skills/release-notes-helper/skill.json",
   "examples/skills/release-notes-helper/README.md",
   "examples/skills/release-notes-helper/SKILL.md",
@@ -25,11 +34,18 @@ const requiredPaths = [
 const policyFiles = [
   "README.md",
   "SECURITY.md",
-  "docs/ALPHA_RELEASE_GOAL.md",
+  "SUPPORT.md",
+  "CONTRIBUTING.md",
+  "CHANGELOG.md",
+  "docs/BETA_RELEASE_GOAL.md",
   "docs/BUSINESS_SAFE_RELEASE_GOAL.md",
+  "docs/COMPATIBILITY.md",
+  "docs/DEPLOYMENT.md",
   "docs/RELEASE.md",
   "docs/ROADMAP.md",
+  "docs/SECURITY_MODEL.md",
   "docs/THREAT_MODEL.md",
+  "docs/UPGRADE_POLICY.md",
 ];
 
 const forbiddenPolicyPhrases = [
@@ -37,6 +53,13 @@ const forbiddenPolicyPhrases = [
   /private while the core architecture/i,
   /will be finalized before public release/i,
   /repo is not ready for a public release/i,
+  /current alpha controls/i,
+  /current alpha repository/i,
+  ...[
+    ["check:alpha", "-release"],
+    ["check-alpha", "-release"],
+    ["deterministic alpha", "-release check"],
+  ].map((parts) => new RegExp(escapeRegExp(parts.join("")), "i")),
 ];
 
 const forbiddenExamplePhrases = [
@@ -74,14 +97,14 @@ for (const dir of exampleDirs) {
 }
 
 if (failures.length > 0) {
-  console.error("Alpha release check failed:");
+  console.error("Prerelease check failed:");
   for (const failure of failures) {
     console.error(`- ${failure}`);
   }
   process.exit(1);
 }
 
-console.log("Alpha release check passed.");
+console.log("Prerelease check passed.");
 
 function assertFile(path) {
   const absolute = resolve(root, path);
@@ -135,4 +158,8 @@ function listFiles(dir) {
     }
   }
   return files.sort();
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

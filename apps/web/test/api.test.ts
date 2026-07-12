@@ -11,9 +11,9 @@ import {
 } from "../src/api.js";
 
 test("registry client searches skills through the API", async () => {
-  const calls: string[] = [];
-  const client = createRegistryClient("http://api.test", async (input) => {
-    calls.push(String(input));
+  const calls: Array<{ credentials?: RequestCredentials; url: string }> = [];
+  const client = createRegistryClient("http://api.test", async (input, init) => {
+    calls.push({ credentials: init?.credentials, url: String(input) });
     return jsonResponse(200, {
       skills: [{ slug: "release-notes-helper", title: "Release Notes Helper" }],
     });
@@ -21,7 +21,8 @@ test("registry client searches skills through the API", async () => {
 
   const skills = await client.searchSkills("release notes");
 
-  assert.equal(calls[0], "http://api.test/v1/skills?q=release%20notes");
+  assert.equal(calls[0]?.url, "http://api.test/v1/skills?q=release%20notes");
+  assert.equal(calls[0]?.credentials, "include");
   assert.equal(skills[0]?.slug, "release-notes-helper");
 });
 
@@ -75,13 +76,15 @@ test("registry client forwards bearer tokens to authorized registry reads", asyn
 });
 
 test("registry client supports login, MFA verification, current user, and logout", async () => {
-  const calls: Array<{ body?: string; method?: string; url: string; authorization?: string }> = [];
+  const calls: Array<{ body?: string; method?: string; url: string; authorization?: string; sessionResponse?: string }> = [];
   const client = createRegistryClient("http://api.test", async (input, init) => {
+    const headers = init?.headers instanceof Headers ? init.headers : new Headers(init?.headers);
     calls.push({
       body: typeof init?.body === "string" ? init.body : undefined,
       method: init?.method,
       url: String(input),
-      authorization: init?.headers instanceof Headers ? init.headers.get("authorization") ?? undefined : (init?.headers as Record<string, string> | undefined)?.authorization,
+      authorization: headers.get("authorization") ?? undefined,
+      sessionResponse: headers.get("x-myskills-session-response") ?? undefined,
     });
     if (String(input).endsWith("/v1/auth/login")) {
       return jsonResponse(200, {
@@ -93,7 +96,6 @@ test("registry client supports login, MFA verification, current user, and logout
     }
     if (String(input).endsWith("/v1/auth/mfa/verify")) {
       return jsonResponse(200, {
-        token: "verified-session-token",
         expiresAt: "2026-06-04T01:00:00.000Z",
         user: { email: "maintainer@example.com" },
       });
@@ -106,11 +108,10 @@ test("registry client supports login, MFA verification, current user, and logout
 
   const login = await client.login({ email: "maintainer@example.com", password: "test-password" });
   const verified = await client.verifyMfa({ challengeToken: "challenge-token", codeOrRecoveryCode: "123456" });
-  const user = await client.getMe(verified.token);
-  await client.logout(verified.token);
+  const user = await client.getMe();
+  await client.logout();
 
   assert.equal(login.mfaRequired, true);
-  assert.equal(verified.token, "verified-session-token");
   assert.equal(user.email, "maintainer@example.com");
   assert.deepEqual(calls.map((call) => call.url), [
     "http://api.test/v1/auth/login",
@@ -118,8 +119,9 @@ test("registry client supports login, MFA verification, current user, and logout
     "http://api.test/v1/me",
     "http://api.test/v1/auth/logout",
   ]);
-  assert.equal(calls[2].authorization, "Bearer verified-session-token");
-  assert.equal(calls[3].authorization, "Bearer verified-session-token");
+  assert.deepEqual(calls.map((call) => call.sessionResponse), ["cookie", "cookie", undefined, undefined]);
+  assert.equal(calls[2].authorization, undefined);
+  assert.equal(calls[3].authorization, undefined);
 });
 
 test("registry client supports MFA status and TOTP enrollment", async () => {
@@ -357,9 +359,17 @@ test("registry client manages review queue with the session bearer", async () =>
           version: "0.1.0",
           reviewStatus: "unreviewed",
           securityStatus: "passed",
+          approvedArtifactSha256: null,
           findingCount: 0,
         }],
       });
+    }
+    if (url.endsWith("/v1/review/submissions/submission-1/bundle")) {
+      return jsonResponse(
+        200,
+        { files: [{ path: "skill.json", content: "{}" }] },
+        { "x-myskills-artifact-sha256": "a".repeat(64) },
+      );
     }
     return jsonResponse(200, {
       submission: {
@@ -369,23 +379,33 @@ test("registry client manages review queue with the session bearer", async () =>
         lifecycleStatus: "review",
         reviewStatus: "approved",
         securityStatus: "passed",
+        approvedArtifactSha256: "a".repeat(64),
         publishedAt: null,
       },
     });
   });
 
   await client.listReviewSubmissions("review-session");
-  await client.performReviewAction("submission-1", "approve", "checked", "review-session");
+  const bundle = await client.getReviewSubmissionBundle("submission-1", undefined, "review-session");
+  await client.performReviewAction({
+    submissionId: "submission-1",
+    action: "approve",
+    reason: "checked",
+    artifactSha256: bundle.artifactSha256,
+  }, "review-session");
 
   assert.deepEqual(calls.map((call) => `${call.method ?? "GET"} ${call.url}`), [
     "GET http://api.test/v1/review/submissions",
+    "GET http://api.test/v1/review/submissions/submission-1/bundle",
     "POST http://api.test/v1/review/submissions/submission-1/actions",
   ]);
   assert.deepEqual(calls.map((call) => call.authorization), [
     "Bearer review-session",
     "Bearer review-session",
+    "Bearer review-session",
   ]);
-  assert.equal(calls[1].body, JSON.stringify({ action: "approve", reason: "checked" }));
+  assert.equal(bundle.artifactSha256, "a".repeat(64));
+  assert.equal(calls[2].body, JSON.stringify({ action: "approve", reason: "checked", artifactSha256: "a".repeat(64) }));
 });
 
 test("registry client submits package archives with the session bearer", async () => {
@@ -537,10 +557,11 @@ test("export command matches CLI contract", () => {
   );
 });
 
-function jsonResponse(status: number, body: Record<string, unknown>): Response {
+function jsonResponse(status: number, body: Record<string, unknown>, headers: Record<string, string> = {}): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(headers),
     async text() {
       return JSON.stringify(body);
     },

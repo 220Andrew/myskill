@@ -89,7 +89,6 @@ type AuthState = "idle" | "loading" | "mfa";
 type AppView = "landing" | "login" | "reset-password" | "verify-email" | "change-email" | "browse" | "admin" | "review" | "submit" | "teams" | "settings";
 
 interface WebSession {
-  token: string;
   expiresAt: string;
   user: WebAuthUser;
 }
@@ -121,7 +120,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
   const initialSlug = skillSlugFromPath(window.location.pathname);
   const [view, setView] = useState<AppView>(initialViewFromPath(window.location.pathname));
   const [session, setSession] = useState<WebSession | null>(() => readStoredSession());
-  const registryClient = useMemo(() => client ?? createRegistryClient(undefined, undefined, session?.token), [client, session?.token]);
+  const registryClient = useMemo(() => client ?? createRegistryClient(), [client]);
   const [query, setQuery] = useState("");
   const [skills, setSkills] = useState<PublicSkill[]>([]);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(initialSlug);
@@ -193,7 +192,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
       return;
     }
     let active = true;
-    registryClient.getMe(session.token)
+    registryClient.getMe()
       .then((user) => {
         if (!active) {
           return;
@@ -213,7 +212,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
     return () => {
       active = false;
     };
-  }, [registryClient, session?.token]);
+  }, [registryClient, session?.expiresAt]);
 
   useEffect(() => {
     if (activeView !== "browse") {
@@ -339,9 +338,8 @@ export function RegistryApp({ client }: RegistryAppProps) {
         return;
       }
       const nextSession = {
-        token: result.token,
         expiresAt: result.expiresAt,
-        user: await registryClient.getMe(result.token),
+        user: await registryClient.getMe(),
       };
       setSession(nextSession);
       writeStoredSession(nextSession);
@@ -365,9 +363,8 @@ export function RegistryApp({ client }: RegistryAppProps) {
         codeOrRecoveryCode,
       });
       const nextSession = {
-        token: result.token,
         expiresAt: result.expiresAt,
-        user: await registryClient.getMe(result.token),
+        user: await registryClient.getMe(),
       };
       setSession(nextSession);
       writeStoredSession(nextSession);
@@ -394,17 +391,14 @@ export function RegistryApp({ client }: RegistryAppProps) {
   }
 
   async function handleLogout() {
-    const token = session?.token;
     setAuthMessage(null);
     setSession(null);
     clearStoredSession();
     setMfaPending(null);
-    if (token) {
-      try {
-        await registryClient.logout(token);
-      } catch {
-        setAuthMessage("Signed out locally.");
-      }
+    try {
+      await registryClient.logout();
+    } catch {
+      setAuthMessage("Signed out locally.");
     }
   }
 
@@ -866,7 +860,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
   async function refreshSubmissions() {
     setSubmissionsState("loading");
     try {
-      setSubmissions(await client.listUserSubmissions(session.token));
+      setSubmissions(await client.listUserSubmissions());
       setSubmissionsState("ready");
     } catch (error) {
       setMessage(safeSubmitErrorMessage(error));
@@ -876,7 +870,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
 
   useEffect(() => {
     void refreshSubmissions();
-  }, [client, session.token]);
+  }, [client]);
 
   async function submitPackage() {
     setMessage(null);
@@ -902,7 +896,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
       const submitted = await client.submitArchive({
         filename: file.name,
         contentBase64: await fileToBase64(file),
-      }, session.token);
+      });
       setResult(submitted);
       setState("ready");
       await refreshSubmissions();
@@ -916,7 +910,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
     setMessage(null);
     setExportingId(submission.id);
     try {
-      const bundle = await client.exportUserSubmission(submission.id, session.token);
+      const bundle = await client.exportUserSubmission(submission.id);
       downloadJsonFile(`${submission.slug}-${submission.version}.myskills.json`, bundle);
     } catch (error) {
       setMessage(safeSubmitErrorMessage(error));
@@ -929,7 +923,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
     setMessage(null);
     setActioningId(submission.id);
     try {
-      await client.performSubmissionAction(submission.id, "withdraw", "Withdrawn by author", session.token);
+      await client.performSubmissionAction(submission.id, "withdraw", "Withdrawn by author");
       await refreshSubmissions();
     } catch (error) {
       setMessage(safeSubmitErrorMessage(error));
@@ -1121,9 +1115,12 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
   const [submissions, setSubmissions] = useState<ReviewSubmissionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [reviewArtifactHashes, setReviewArtifactHashes] = useState<Record<string, string>>({});
+  const [artifactLoadingId, setArtifactLoadingId] = useState<string | null>(null);
   const selected = submissions.find((submission) => submission.id === selectedId) ?? submissions[0] ?? null;
   const allowedReviewActions = selected?.allowedActions ?? fallbackReviewActions(selected);
-  const approveDisabled = !allowedReviewActions.includes("approve");
+  const selectedArtifactHash = selected ? reviewArtifactHashes[selected.id] ?? selected.approvedArtifactSha256 ?? null : null;
+  const approveDisabled = !allowedReviewActions.includes("approve") || !selectedArtifactHash;
   const requestChangesDisabled = !allowedReviewActions.includes("request-changes");
   const rejectDisabled = !allowedReviewActions.includes("reject");
   const publishDisabled = !allowedReviewActions.includes("publish");
@@ -1132,7 +1129,9 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
       ? "Resolve or document scan findings before approving or publishing."
       : selected.reviewStatus === "approved"
         ? "This submission is approved. Publish it when release notes and metadata are ready."
-        : "Approve after checking metadata, package integrity, and scan output."
+        : selectedArtifactHash
+          ? "Approve after checking metadata, package integrity, and scan output."
+          : "Download the review artifact before approving so the approval records its exact hash."
     : "";
 
   async function refreshReview() {
@@ -1140,7 +1139,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
     setMessage(null);
     setNotice(null);
     try {
-      const nextSubmissions = await client.listReviewSubmissions(session.token);
+      const nextSubmissions = await client.listReviewSubmissions();
       setSubmissions(nextSubmissions);
       setSelectedId((current) => (
         current && nextSubmissions.some((submission) => submission.id === current)
@@ -1156,14 +1155,23 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
 
   useEffect(() => {
     void refreshReview();
-  }, [client, session.token]);
+  }, [client]);
 
   async function runReviewAction(submission: ReviewSubmissionSummary, action: ReviewActionName) {
     setMessage(null);
     setNotice(null);
     try {
-      const result = await client.performReviewAction(submission.id, action, reason, session.token);
-      const nextSubmissions = await client.listReviewSubmissions(session.token);
+      if (action === "approve" && !selectedArtifactHash) {
+        setMessage("Download the review artifact before approving this submission.");
+        return;
+      }
+      const result = await client.performReviewAction({
+        submissionId: submission.id,
+        action,
+        reason,
+        ...(action === "approve" && selectedArtifactHash ? { artifactSha256: selectedArtifactHash } : {}),
+      });
+      const nextSubmissions = await client.listReviewSubmissions();
       setSubmissions(nextSubmissions);
       setSelectedId(result.publishedAt ? nextSubmissions[0]?.id ?? null : result.id);
       setReason("");
@@ -1177,6 +1185,22 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
       setNotice(`${submission.title} ${actionLabel}.`);
     } catch (error) {
       setMessage(safeReviewErrorMessage(error));
+    }
+  }
+
+  async function downloadReviewArtifact(submission: ReviewSubmissionSummary) {
+    setMessage(null);
+    setNotice(null);
+    setArtifactLoadingId(submission.id);
+    try {
+      const bundle = await client.getReviewSubmissionBundle(submission.id);
+      setReviewArtifactHashes((current) => ({ ...current, [submission.id]: bundle.artifactSha256 }));
+      downloadJsonFile(`${submission.slug}-${submission.version}-review.myskills.json`, bundle.payload);
+      setNotice(`Review artifact downloaded. Hash ${bundle.artifactSha256.slice(0, 12)}... is ready for approval.`);
+    } catch (error) {
+      setMessage(safeReviewErrorMessage(error));
+    } finally {
+      setArtifactLoadingId(null);
     }
   }
 
@@ -1271,6 +1295,10 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                     <dd>{String(selected.findingCount)}</dd>
                   </div>
                   <div>
+                    <dt>Artifact hash</dt>
+                    <dd className="mono">{selectedArtifactHash ? `${selectedArtifactHash.slice(0, 12)}...` : "download required"}</dd>
+                  </div>
+                  <div>
                     <dt>Submitted</dt>
                     <dd>{formatDate(selected.createdAt)}</dd>
                   </div>
@@ -1292,6 +1320,17 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
 
                 <div className="shadcn-action-bar">
                   <div className="review-actions shadcn-review-actions">
+                    <Button
+                      className="shadcn-action-button"
+                      disabled={artifactLoadingId === selected.id}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                      onClick={() => void downloadReviewArtifact(selected)}
+                    >
+                      <Download size={16} aria-hidden="true" />
+                      Download artifact
+                    </Button>
                     <Button
                       className="shadcn-action-button"
                       disabled={approveDisabled}
@@ -1357,7 +1396,7 @@ function fallbackReviewActions(submission: ReviewSubmissionSummary | null): Revi
     return [];
   }
   if (submission.reviewStatus === "approved" && submission.securityStatus === "passed") {
-    return ["publish"];
+    return submission.approvedArtifactSha256 ? ["publish"] : [];
   }
   if (["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
     return submission.securityStatus === "passed"
@@ -1384,8 +1423,8 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     setMessage(null);
     try {
       const [nextDashboard, nextGroups] = await Promise.all([
-        client.listTeams(session.token),
-        client.listTeamSharedSkills(session.token),
+        client.listTeams(),
+        client.listTeamSharedSkills(),
       ]);
       setDashboard(nextDashboard);
       setSharedGroups(nextGroups);
@@ -1394,7 +1433,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
       setMessage(safeTeamErrorMessage(error));
       setState("error");
     }
-  }, [client, session.token]);
+  }, [client]);
 
   useEffect(() => {
     void refreshTeams();
@@ -1406,7 +1445,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     }
     setMessage(null);
     try {
-      await client.createTeam(teamName, session.token);
+      await client.createTeam(teamName);
       setTeamName("");
       await refreshTeams();
     } catch (error) {
@@ -1421,7 +1460,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     }
     setMessage(null);
     try {
-      await client.inviteTeamMember(team.id, email, session.token);
+      await client.inviteTeamMember(team.id, email);
       setInviteEmails((current) => ({ ...current, [team.id]: "" }));
       await refreshTeams();
     } catch (error) {
@@ -1432,7 +1471,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
   async function acceptInvitation(invitation: TeamInvitation) {
     setMessage(null);
     try {
-      await client.acceptTeamInvitation(invitation.id, session.token);
+      await client.acceptTeamInvitation(invitation.id);
       await refreshTeams();
     } catch (error) {
       setMessage(safeTeamErrorMessage(error));
@@ -1717,11 +1756,11 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
     setMessage(null);
     try {
       const [registration, nextUsers, nextApiTokens, nextProviders, nextAuditEvents] = await Promise.all([
-        client.getAdminRegistration(session.token),
-        client.listAdminUsers(session.token),
-        client.listAdminApiTokens(session.token),
-        client.listAdminProviders(session.token),
-        client.listAdminAudit(25, session.token),
+        client.getAdminRegistration(),
+        client.listAdminUsers(),
+        client.listAdminApiTokens(),
+        client.listAdminProviders(),
+        client.listAdminAudit(25),
       ]);
       setRegistrationMode(registration.mode);
       setUsers(nextUsers);
@@ -1738,7 +1777,7 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
 
   useEffect(() => {
     void refreshAdmin();
-  }, [client, session.token]);
+  }, [client]);
 
   async function updateRegistration(mode: AdminRegistrationMode) {
     setMessage(null);
@@ -1750,9 +1789,9 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
       return;
     }
     try {
-      const registration = await client.updateAdminRegistration(mode, session.token);
+      const registration = await client.updateAdminRegistration(mode);
       setRegistrationMode(registration.mode);
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -1769,9 +1808,9 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
       return;
     }
     try {
-      const updated = await client.performAdminUserAction(userId, action, session.token);
+      const updated = await client.performAdminUserAction(userId, action);
       setUsers((current) => current.map((user) => user.id === updated.id ? updated : user));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -1780,9 +1819,9 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
   async function updateUserRoles(userId: string, roles: string[]) {
     setMessage(null);
     try {
-      const updated = await client.updateAdminUserRoles(userId, roles, session.token);
+      const updated = await client.updateAdminUserRoles(userId, roles);
       setUsers((current) => current.map((user) => user.id === updated.id ? updated : user));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -1791,9 +1830,9 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
   async function revokeAdminToken(tokenId: string) {
     setMessage(null);
     try {
-      const token = await client.revokeAdminApiToken(tokenId, session.token);
+      const token = await client.revokeAdminApiToken(tokenId);
       setApiTokens((current) => current.map((item) => item.id === token.id ? token : item));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -1809,10 +1848,10 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
         clientId: optionalDraftValue(draft.clientId),
         enabled: draft.enabled,
         roleMappings: draft.roleMappings.filter((mapping) => mapping.claim.trim() && mapping.value.trim()),
-      }, session.token);
+      });
       setProviders((current) => upsertProvider(current, provider));
       setDraft(providerToDraft(provider));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -2341,8 +2380,8 @@ function AccountSettings({
   async function refreshAccountSecurity() {
     try {
       const [nextMfaStatus, nextApiTokens] = await Promise.all([
-        client.getMfaStatus(session.token),
-        client.listApiTokens(session.token),
+        client.getMfaStatus(),
+        client.listApiTokens(),
       ]);
       setMfaStatus(nextMfaStatus);
       setApiTokens(nextApiTokens);
@@ -2355,7 +2394,7 @@ function AccountSettings({
 
   useEffect(() => {
     void refreshAccountSecurity();
-  }, [client, session.token]);
+  }, [client]);
 
   async function submitPasswordChange(input?: { currentPassword: string; password: string; confirmPassword: string }) {
     setMessage(null);
@@ -2370,7 +2409,7 @@ function AccountSettings({
     }
     setState("loading");
     try {
-      await client.changePassword({ currentPassword: passwordInput.currentPassword, password: passwordInput.password }, session.token);
+      await client.changePassword({ currentPassword: passwordInput.currentPassword, password: passwordInput.password });
       onSessionInvalidated("Password changed. Sign in again with the new password.");
     } catch (error) {
       setState("error");
@@ -2383,7 +2422,7 @@ function AccountSettings({
     setState("loading");
     try {
       const emailInput = input ?? { email, password: emailPassword };
-      await client.requestEmailChange({ email: emailInput.email, password: emailInput.password }, session.token);
+      await client.requestEmailChange({ email: emailInput.email, password: emailInput.password });
       setEmail("");
       setEmailPassword("");
       setState("ready");
@@ -2398,7 +2437,7 @@ function AccountSettings({
     setMessage(null);
     setState("loading");
     try {
-      await client.disableTotpMfa({ password: passwordOverride ?? mfaPassword }, session.token);
+      await client.disableTotpMfa({ password: passwordOverride ?? mfaPassword });
       onSessionInvalidated("MFA removed. Sign in again to continue.");
     } catch (error) {
       setState("error");
@@ -2415,9 +2454,9 @@ function AccountSettings({
         name: apiTokenName,
         scopes: apiTokenScopes,
         expiresAt: apiTokenExpiresAt || undefined,
-      }, session.token);
+      });
       setCreatedApiToken(token.token);
-      setApiTokens(await client.listApiTokens(session.token));
+      setApiTokens(await client.listApiTokens());
       setApiTokenName("");
       setApiTokenExpiresAt("");
       setState("ready");
@@ -2431,7 +2470,7 @@ function AccountSettings({
     setMessage(null);
     setState("loading");
     try {
-      const token = await client.revokeApiToken(tokenId, session.token);
+      const token = await client.revokeApiToken(tokenId);
       setApiTokens((current) => current.map((item) => item.id === token.id ? token : item));
       setState("ready");
     } catch (error) {
@@ -2906,7 +2945,7 @@ function AuthWidget({
       return;
     }
     let active = true;
-    client.getMfaStatus(session.token)
+    client.getMfaStatus()
       .then((status) => {
         if (active) {
           setMfaStatus(status);
@@ -2920,7 +2959,7 @@ function AuthWidget({
     return () => {
       active = false;
     };
-  }, [client, session?.token]);
+  }, [client, session?.expiresAt]);
 
   if (session) {
     const mfaEnabled = Boolean(mfaStatus?.totpEnabled || session.user.mfaVerified);
@@ -3097,7 +3136,7 @@ function MfaSetupPanel({
     setState("loading");
     setMessage(null);
     try {
-      const nextEnrollment = await client.startTotpEnrollment({ password: passwordOverride ?? password, label: "1Password" }, session.token);
+      const nextEnrollment = await client.startTotpEnrollment({ password: passwordOverride ?? password, label: "1Password" });
       setEnrollment({
         factorId: nextEnrollment.factorId,
         secret: nextEnrollment.secret,
@@ -3118,7 +3157,7 @@ function MfaSetupPanel({
     setState("loading");
     setMessage(null);
     try {
-      const result = await client.confirmTotpEnrollment({ factorId: enrollment.factorId, code: (codeOverride ?? code).trim() }, session.token);
+      const result = await client.confirmTotpEnrollment({ factorId: enrollment.factorId, code: (codeOverride ?? code).trim() });
       setRecoveryCodes(result.recoveryCodes);
       setCode("");
       setState("ready");
@@ -3319,13 +3358,13 @@ function LifecyclePanel({
     setState("loading");
     setMessage(null);
     try {
-      setReleases(await client.listSkillReleases(selectedSkill.slug, session.token));
+      setReleases(await client.listSkillReleases(selectedSkill.slug));
       setState("ready");
     } catch (error) {
       setMessage(safeReviewErrorMessage(error));
       setState("error");
     }
-  }, [client, selectedSkill.slug, session.token]);
+  }, [client, selectedSkill.slug]);
 
   useEffect(() => {
     void refresh();
@@ -3339,7 +3378,7 @@ function LifecyclePanel({
         title,
         summary,
         reason,
-      }, session.token);
+      });
       setMessage("Skill metadata saved.");
       setReason("");
     } catch (error) {
@@ -3350,7 +3389,7 @@ function LifecyclePanel({
   async function runSkillAction(action: "archive" | "restore" | "delete") {
     setMessage(null);
     try {
-      await client.performSkillAction(selectedSkill.slug, action, reason, session.token);
+      await client.performSkillAction(selectedSkill.slug, action, reason);
       setMessage(`Skill ${formatStatusLabel(action).toLowerCase()} complete.`);
       setReason("");
       await refresh();
@@ -3362,7 +3401,7 @@ function LifecyclePanel({
   async function runReleaseAction(action: ReleaseLifecycleActionName) {
     setMessage(null);
     try {
-      await client.performReleaseAction(selectedSkill.slug, release.version, action, reason, undefined, session.token);
+      await client.performReleaseAction(selectedSkill.slug, release.version, action, reason, undefined);
       setMessage(`Release ${formatStatusLabel(action).toLowerCase()} complete.`);
       setReason("");
       await refresh();
@@ -3470,7 +3509,7 @@ function SharingPanel({
     setState("loading");
     setMessage(null);
     try {
-      const next = await client.getSkillSharing(selectedSkill.slug, session.token);
+      const next = await client.getSkillSharing(selectedSkill.slug);
       setDetails(next);
       setVisibility(next.visibility);
       setTeamIds(next.teamGrants.map((team) => team.id));
@@ -3480,7 +3519,7 @@ function SharingPanel({
       setMessage(safeTeamErrorMessage(error));
       setState("error");
     }
-  }, [client, selectedSkill.slug, session.token]);
+  }, [client, selectedSkill.slug]);
 
   useEffect(() => {
     void loadSharing();
@@ -3497,7 +3536,7 @@ function SharingPanel({
         visibility,
         teamIds: visibility === "team" ? teamIds : [],
         userEmails: visibility === "explicit-users" ? splitEmails(userEmails) : [],
-      }, session.token);
+      });
       setDetails(next);
       setVisibility(next.visibility);
       setTeamIds(next.teamGrants.map((team) => team.id));
@@ -3854,7 +3893,7 @@ function downloadJsonFile(filename: string, value: unknown): void {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
     return;
   }
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(value)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -3907,6 +3946,10 @@ function readStoredSession(): WebSession | null {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return null;
     }
+    if ("token" in parsed) {
+      clearStoredSession();
+      return null;
+    }
     if (!isStoredSession(parsed)) {
       clearStoredSession();
       return null;
@@ -3923,8 +3966,7 @@ function isStoredSession(input: unknown): input is WebSession {
     return false;
   }
   const record = input as Partial<WebSession>;
-  return typeof record.token === "string" && record.token.length > 0
-    && typeof record.expiresAt === "string" && record.expiresAt.length > 0
+  return typeof record.expiresAt === "string" && record.expiresAt.length > 0
     && isStoredUser(record.user);
 }
 
@@ -3944,7 +3986,6 @@ function isStoredUser(input: unknown): input is WebAuthUser {
 
 function writeStoredSession(session: WebSession): void {
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-    token: session.token,
     expiresAt: session.expiresAt,
     user: session.user,
   }));
