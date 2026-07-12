@@ -123,14 +123,15 @@ function validateDatabase() {
   if (!value) {
     return;
   }
-  if (value === DEV_DATABASE_URL || value.includes("ai_skills_share_dev")) {
-    errors.push("DATABASE_URL still uses the local development database credentials.");
-  }
-  if (value.includes("replace-with-")) {
+  if (value.startsWith("replace-with-")) {
     errors.push("DATABASE_URL still contains an example placeholder.");
   }
   try {
     const url = new URL(value);
+    const databaseName = decodeURIComponent(url.pathname.replace(/^\//, ""));
+    if (value === DEV_DATABASE_URL || databaseName === "ai_skills_share_dev") {
+      errors.push("DATABASE_URL still uses the local development database credentials.");
+    }
     if (!url.protocol.startsWith("postgres")) {
       errors.push("DATABASE_URL must use a postgres:// or postgresql:// URL.");
     }
@@ -164,7 +165,7 @@ function validateAllowedOrigins() {
   for (const origin of origins) {
     validateUrlValue("ALLOWED_WEB_ORIGINS", origin, { https: true });
     rejectLocalUrl("ALLOWED_WEB_ORIGINS", origin);
-    if (origin.includes("example.com")) {
+    if (hasExampleDomain(origin)) {
       errors.push("ALLOWED_WEB_ORIGINS still uses an example placeholder.");
     }
   }
@@ -176,7 +177,7 @@ function validateAllowedOrigins() {
 function validateTrustProxy() {
   const value = stringValue("TRUST_PROXY");
   if (!value) {
-    warnings.push("TRUST_PROXY is not set. If the API runs behind nginx/Railway, auth rate limits will use the proxy IP.");
+    errors.push("TRUST_PROXY must be set explicitly to false, a positive hop count, or a trusted proxy address list.");
     return;
   }
   if (value === "true") {
@@ -197,7 +198,7 @@ function validateTrustProxy() {
   }
   for (const entry of entries) {
     if (!isValidProxyAddress(entry)) {
-      errors.push(`TRUST_PROXY contains an invalid proxy address entry: ${entry}`);
+      errors.push("TRUST_PROXY contains an invalid proxy address entry.");
     }
   }
 }
@@ -280,7 +281,7 @@ function validateBootstrapSecrets() {
   }
   if (args.requireSeed) {
     const email = requiredString("SEED_OWNER_EMAIL");
-    if (email === "owner@example.com" || email.includes("example.com")) {
+    if (email === "owner@example.com" || hasExampleDomain(email)) {
       errors.push("SEED_OWNER_EMAIL still uses an example placeholder.");
     }
     const password = requiredString("SEED_OWNER_PASSWORD");
@@ -341,7 +342,7 @@ function validateS3Endpoint(value) {
   try {
     url = new URL(value);
   } catch {
-    errors.push(`S3_ENDPOINT must be a valid URL: ${value}`);
+    errors.push("S3_ENDPOINT must be a valid URL.");
     return;
   }
   if (url.protocol === "https:") {
@@ -356,16 +357,30 @@ function validateS3Endpoint(value) {
 
 function rejectExampleValue(name) {
   const value = stringValue(name);
-  if (value.includes("example.com") || value.includes("replace-with-")) {
+  if (value.startsWith("replace-with-") || hasExampleDomain(value)) {
     errors.push(`${name} still uses an example placeholder.`);
   }
+}
+
+function hasExampleDomain(value) {
+  try {
+    return isExampleHostname(new URL(value).hostname);
+  } catch {
+    const emailDomain = value.match(/@([A-Za-z0-9.-]+)>?$/)?.[1];
+    return emailDomain ? isExampleHostname(emailDomain) : isExampleHostname(value);
+  }
+}
+
+function isExampleHostname(value) {
+  const hostname = value.trim().toLowerCase().replace(/\.$/, "");
+  return hostname === "example.com" || hostname.endsWith(".example.com");
 }
 
 function rejectLocalUrl(name, value) {
   try {
     const url = new URL(value);
     if (isLoopbackHost(url.hostname)) {
-      errors.push(`${name} must not use localhost or loopback in production: ${value}`);
+      errors.push(`${name} must not use localhost or loopback in production.`);
     }
   } catch {
     return;
@@ -376,10 +391,10 @@ function validateUrlValue(name, value, options) {
   try {
     const url = new URL(value);
     if (options.https && url.protocol !== "https:") {
-      errors.push(`${name} must use https: ${value}`);
+      errors.push(`${name} must use https.`);
     }
   } catch {
-    errors.push(`${name} must be a valid URL: ${value}`);
+    errors.push(`${name} must be a valid URL.`);
   }
 }
 
@@ -414,15 +429,6 @@ function booleanValue(name) {
 
 function csv(name) {
   return stringValue(name).split(",").map((item) => item.trim()).filter(Boolean);
-}
-
-function isLocalHttpOrigin(value) {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" && isLoopbackHost(url.hostname);
-  } catch {
-    return false;
-  }
 }
 
 function isLoopbackHost(host) {

@@ -25,6 +25,8 @@ import type {
   CreateUserWithPasswordResult,
   CompleteRegistrationInvitationInput,
   CompleteRegistrationInvitationResult,
+  CompletePasswordResetInput,
+  AdminUserStatusChangeResult,
   ProviderConfigRecord,
   ProviderRoleMappingRecord,
   UpsertProviderConfigInput,
@@ -299,6 +301,36 @@ export class MemoryAuthStore implements AuthStore {
     return toRecord(user);
   }
 
+  async applyAdminUserStatusChange(input: {
+    userId: string;
+    status: UserStatus;
+    emailVerifiedAt?: Date | null;
+    protectLastActiveOwner: boolean;
+    revokeCredentials: boolean;
+  }): Promise<AdminUserStatusChangeResult> {
+    const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
+    if (!user) {
+      return { outcome: "not_found" };
+    }
+    if (
+      input.protectLastActiveOwner &&
+      user.status === "active" &&
+      user.roles.includes("owner") &&
+      input.status !== "active" &&
+      [...this.users.values()].filter((candidate) => candidate.status === "active" && candidate.roles.includes("owner")).length <= 1
+    ) {
+      return { outcome: "last_owner" };
+    }
+    user.status = input.status;
+    if (input.emailVerifiedAt !== undefined) {
+      user.emailVerifiedAt = input.emailVerifiedAt;
+    }
+    if (input.revokeCredentials) {
+      await this.revokeUserCredentials(user.id);
+    }
+    return { outcome: "updated", user: toRecord(user) };
+  }
+
   async updateUserRoles(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
     if (!user) {
@@ -308,12 +340,42 @@ export class MemoryAuthStore implements AuthStore {
     return toRecord(user);
   }
 
+  async updateUserRolesAndRevokeCredentials(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
+    const updated = await this.updateUserRoles(input);
+    if (updated) {
+      await this.revokeUserCredentials(input.userId);
+    }
+    return updated;
+  }
+
   async updatePasswordCredential(input: { userId: string; passwordHash: string; passwordUpdatedAt?: Date }): Promise<boolean> {
     const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
     if (!user || user.passwordHash === null) {
       return false;
     }
     user.passwordHash = input.passwordHash;
+    return true;
+  }
+
+  async completePasswordReset(input: CompletePasswordResetInput): Promise<boolean> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    const token = this.authActionTokens.get(input.tokenHash);
+    if (!token || token.purpose !== "password_reset" || token.usedAt || token.expiresAt <= now) {
+      return false;
+    }
+    const user = [...this.users.values()].find((candidate) => candidate.id === token.userId);
+    if (!user || user.status !== "active" || !user.emailVerifiedAt || user.passwordHash === null) {
+      return false;
+    }
+
+    user.passwordHash = input.passwordHash;
+    for (const candidate of this.authActionTokens.values()) {
+      if (candidate.userId === user.id && candidate.purpose === "password_reset" && !candidate.usedAt) {
+        candidate.usedAt = usedAt;
+      }
+    }
+    await this.revokeUserCredentials(user.id);
     return true;
   }
 

@@ -1,5 +1,8 @@
 # Deployment
 
+Version: 0.1.0-beta.2
+Last updated: 2026-07-13
+
 MySkills is a Node/Postgres application with object storage for package artifacts. The production path is container-first:
 
 - `api`: Fastify API and auth boundary.
@@ -10,7 +13,7 @@ MySkills is a Node/Postgres application with object storage for package artifact
 
 ## Local Docker Dependencies
 
-For development, use the root `docker-compose.yml` only for dependencies:
+For development, use the root `docker-compose.yml` only for dependencies. The normal migrate, seed, API, web, and MCP dev scripts load the root `.env` automatically:
 
 ```bash
 npm install
@@ -18,11 +21,9 @@ cp .env.example .env
 npm run docker:up
 npm run db:migrate
 npm run db:seed
-npm run dev:api
-npm run dev:web
 ```
 
-That flow uses development defaults and is not a production deployment.
+Then run `npm run dev:api` and `npm run dev:web` in separate terminals. That flow uses development defaults and is not a production deployment. See [Getting Started](GETTING_STARTED.md) for the complete first-run smoke.
 
 ## Production Compose
 
@@ -64,6 +65,8 @@ Required public values and routes:
 
 If `VITE_API_BASE_URL` changes, rebuild the `web` image because Vite embeds that value during the build.
 
+The nginx templates set `client_max_body_size 14m` to match the API's bounded JSON submission envelope (including base64 overhead for the decoded archive limit). Any replacement ingress/proxy must preserve an equivalent or tighter compatible limit; nginx's 1 MiB default will break valid package submission before the API can return its own bounded error.
+
 ## Production Safety Gates
 
 Run the preflight before building or deploying:
@@ -79,6 +82,7 @@ Use `--require-seed` before the first owner bootstrap. The check fails for:
 - local development database credentials
 - non-HTTPS public web/API origins
 - wildcard CORS origins
+- missing or broad `TRUST_PROXY` configuration
 - console or disabled auth notification delivery
 - unsafe SMTP TLS settings
 - DB-backed artifact storage in production
@@ -105,9 +109,15 @@ Minimum smoke checks after deployment:
 
 ```bash
 curl https://api.example.com/health
+curl https://api.example.com/ready
 curl https://api.example.com/v1/skills
 curl https://skills.example.com/health
 curl https://skills.example.com/api/health
+curl https://skills.example.com/api/ready
 ```
 
+`/health` proves the process is serving. `/ready` additionally probes Postgres and required artifact storage; use `/ready` for API container/platform healthchecks and promotion decisions.
+
 Then sign in as the seeded owner, enable MFA, rotate the bootstrap password, create an API token with `skills:read`, and verify the CLI and MCP surfaces against the deployed API.
+
+The maintained Railway configuration is documented separately in [Railway Deployment](RAILWAY_DEPLOYMENT.md). Treat that live platform readback—not this generic example—as the source of truth for the current hosted beta.

@@ -1,7 +1,7 @@
 # Codex Cloud Setup
 
-Version: 1.0.0
-Last updated: 2026-06-19
+Version: 0.1.0-beta.2
+Last updated: 2026-07-13
 
 This runbook makes MySkills ready for subscription-based Codex cloud/web tasks while keeping implementation work on GitHub pull requests and avoiding API-billed GitHub Actions agents for now.
 
@@ -12,7 +12,7 @@ Codex cloud should mirror the existing GitHub CI contract:
 - CI installs dependencies with `npm ci`.
 - CI runs `npm run check` for the general gate.
 - CI runs `npm run test:postgres` in a separate job with disposable Postgres.
-- Release verification runs `npm run check`, builds release artifacts, and builds production Docker targets.
+- Release verification runs the canonical `npm run release:verify` gate, then builds production Docker targets in the tag workflow.
 
 Do not add a GitHub Actions workflow that invokes a coding agent yet. Use Codex cloud/web to create branches and pull requests, then let the existing CI and human review gates decide whether to merge.
 
@@ -21,7 +21,7 @@ Do not add a GitHub Actions workflow that invokes a coding agent yet. Use Codex 
 Create or update the Codex cloud environment for `jremick/myskills` with:
 
 - Branch: `main` by default.
-- Runtime: Node.js 20.
+- Runtime: Node.js 22 LTS or 24 LTS (`>=22.13 <23 || >=24 <25`).
 - Setup script:
 
 ```bash
@@ -79,6 +79,7 @@ Use production/deployment checks only with explicit approval:
 ```bash
 npm run check:prod-env -- --env-file .env.production
 curl https://api.myskills.sh/health
+curl https://api.myskills.sh/ready
 curl https://api.myskills.sh/v1/skills
 curl https://myskills.sh/health
 curl https://myskills.sh/api/health

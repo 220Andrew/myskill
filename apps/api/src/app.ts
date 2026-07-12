@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyServerOpt
 import { AppError, type SharingSettings, type SkillRepository, type VisibilityScope } from "@myskills-app/core";
 import {
   MAX_PACKAGE_ARCHIVE_BYTES,
+  MAX_PACKAGE_FILES,
   loadSkillManifestFromPackageFiles,
   PackageManifestFileError,
   parseSkillManifest,
@@ -9,6 +10,7 @@ import {
   type PackageInputFile,
 } from "@myskills-app/skill-package";
 import type { ApiTokenScope } from "./auth/types.js";
+import { MemoryAuthRateLimiter, type AuthRateLimiter } from "./auth/rate-limit.js";
 import type {
   AuthContext,
   AuthService,
@@ -44,11 +46,20 @@ import type {
 } from "./submissions/types.js";
 import type { SubmissionService } from "./submissions/service.js";
 import type { TeamService } from "./teams/service.js";
+import { API_VERSION } from "./version.js";
 
 const SESSION_COOKIE_NAME = "myskills_session";
 const COOKIE_SESSION_RESPONSE_HEADER = "x-myskills-session-response";
 const REVIEW_ARTIFACT_HASH_HEADER = "x-myskills-artifact-sha256";
+const DEFAULT_BODY_LIMIT_BYTES = 1024 * 1024;
+export const SUBMISSION_BODY_LIMIT_BYTES = 14 * 1024 * 1024;
 type TrustProxyOption = NonNullable<FastifyServerOptions["trustProxy"]>;
+
+export interface ReadinessProbes {
+  postgres: () => Promise<void>;
+  artifactStorage?: () => Promise<void>;
+  artifactStorageRequired?: boolean;
+}
 
 export interface BuildAppOptions {
   skillRepository: SkillRepository;
@@ -57,15 +68,21 @@ export interface BuildAppOptions {
   teamService?: TeamService;
   allowedOrigins?: string[];
   trustProxy?: TrustProxyOption;
+  requestLimiter?: AuthRateLimiter;
+  readinessProbes?: ReadinessProbes;
+  readinessTimeoutMs?: number;
   logger?: boolean;
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
   const app = Fastify({
     logger: options.logger ?? false,
+    bodyLimit: DEFAULT_BODY_LIMIT_BYTES,
     ...(options.trustProxy !== undefined ? { trustProxy: options.trustProxy } : {}),
   });
   const allowedOrigins = options.allowedOrigins ?? ["http://localhost:3000", "http://127.0.0.1:3000"];
+  const requestLimiter = options.requestLimiter ?? new MemoryAuthRateLimiter({ maxAttempts: 600, windowMs: 60_000 });
+  const probeLimiter = new MemoryAuthRateLimiter({ maxAttempts: 1_200, windowMs: 60_000 });
 
   app.addHook("onRequest", async (request, reply) => {
     setSecurityHeaders(reply);
@@ -81,9 +98,36 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     if (request.method === "OPTIONS") {
       return reply.code(204).send();
     }
+    if (
+      !isSafeRequestMethod(request.method)
+      && !firstHeader(request.headers.authorization)
+      && sessionCookieToken(request.headers.cookie)
+      && (typeof origin !== "string" || !allowedOrigins.includes(origin))
+    ) {
+      return reply.code(403).send({
+        error: {
+          code: "COOKIE_ORIGIN_REJECTED",
+          message: "Cookie-authenticated changes require an allowed Origin header.",
+        },
+      });
+    }
+    const limiter = request.url === "/health" || request.url === "/ready" ? probeLimiter : requestLimiter;
+    const result = await limiter.consume(`api:ip:${request.ip}`);
+    if (!result.allowed) {
+      return reply
+        .header("retry-after", String(result.retryAfterSeconds))
+        .code(429)
+        .send({
+          error: {
+            code: "API_RATE_LIMITED",
+            message: "Too many requests.",
+            details: { retryAfterSeconds: result.retryAfterSeconds },
+          },
+        });
+    }
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
       const body: { error: { code: string; message: string; details?: unknown } } = {
         error: {
@@ -99,6 +143,14 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       });
     }
     const statusCode = httpStatusCode(error);
+    if (statusCode === 413 && request.routeOptions.url === "/v1/submissions") {
+      return reply.code(413).send({
+        error: {
+          code: "SUBMISSION_BODY_TOO_LARGE",
+          message: `Submission body exceeds ${SUBMISSION_BODY_LIMIT_BYTES} bytes.`,
+        },
+      });
+    }
     if (statusCode && statusCode >= 400 && statusCode < 500) {
       return reply.code(statusCode).send({
         error: {
@@ -120,8 +172,24 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     service: "myskills-app-api",
   }));
 
+  app.get("/ready", async (_request, reply) => {
+    const readinessTimeoutMs = Math.min(Math.max(options.readinessTimeoutMs ?? 2_000, 50), 10_000);
+    const [postgres, artifactStorage] = await Promise.all([
+      readinessCheck(options.readinessProbes?.postgres, readinessTimeoutMs),
+      options.readinessProbes?.artifactStorageRequired
+        ? readinessCheck(options.readinessProbes.artifactStorage, readinessTimeoutMs)
+        : Promise.resolve("not-required" as const),
+    ]);
+    const ok = postgres === "ready" && artifactStorage !== "unready";
+    return reply.code(ok ? 200 : 503).send({
+      ok,
+      service: "myskills-app-api",
+      checks: { postgres, artifactStorage },
+    });
+  });
+
   app.get("/v1/capabilities", async () => ({
-    version: process.env.MYSKILLS_API_VERSION ?? "0.1.0-beta.1",
+    version: API_VERSION,
     capabilities: {
       auth: Boolean(options.authService),
       search: true,
@@ -965,7 +1033,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     };
   });
 
-  app.post("/v1/submissions", async (request, reply) => {
+  app.post("/v1/submissions", { bodyLimit: SUBMISSION_BODY_LIMIT_BYTES }, async (request, reply) => {
     if (!options.authService) {
       throw new AppError("Authentication service is not configured.", "AUTH_SERVICE_UNAVAILABLE", 503);
     }
@@ -1165,7 +1233,25 @@ function requireScope(context: AuthContext, scope: ApiTokenScope): void {
 }
 
 function hasBearerAuthorization(authorization: string | undefined): boolean {
-  return /^Bearer\s+\S+/i.test(authorization?.trim() ?? "");
+  if (!authorization || authorization.length < 8 || authorization.length > 7 + 256) {
+    return false;
+  }
+  if (authorization.slice(0, 6).toLowerCase() !== "bearer" || !isAsciiWhitespace(authorization.charCodeAt(6))) {
+    return false;
+  }
+  let index = 6;
+  while (index < authorization.length && isAsciiWhitespace(authorization.charCodeAt(index))) {
+    index += 1;
+  }
+  return index < authorization.length;
+}
+
+function isAsciiWhitespace(code: number): boolean {
+  return code === 0x20 || (code >= 0x09 && code <= 0x0d);
+}
+
+function isSafeRequestMethod(method: string): boolean {
+  return method === "GET" || method === "HEAD" || method === "OPTIONS";
 }
 
 function requestAuthorization(request: { headers: { authorization?: string | string[]; cookie?: string | string[] } }): string | undefined {
@@ -1577,6 +1663,9 @@ async function parseSubmissionInput(input: unknown): Promise<{
   if (!Array.isArray(body.files)) {
     throw new AppError("Package files are required.", "PACKAGE_FILES_REQUIRED", 400);
   }
+  if (body.files.length > MAX_PACKAGE_FILES) {
+    throw new AppError(`Package contains more than ${MAX_PACKAGE_FILES} files.`, "INVALID_PACKAGE_PAYLOAD", 400);
+  }
 
   const files = body.files.map((file, index) => {
     if (!file || typeof file !== "object" || Array.isArray(file)) {
@@ -1626,7 +1715,7 @@ function parseSubmissionArchive(input: unknown): { filename?: string; content: B
   }
   const record = input as Record<string, unknown>;
   const filename = optionalString(record.filename, "archive.filename");
-  if (filename !== undefined && !/^[A-Za-z0-9._-]+\.zip$/i.test(filename)) {
+  if (filename !== undefined && (filename.length > 255 || !/^[A-Za-z0-9._-]+\.zip$/i.test(filename))) {
     throw new AppError("Package archive filename must be a .zip basename.", "INVALID_PACKAGE_ARCHIVE", 400);
   }
   const contentBase64 = requiredString(record.contentBase64, "archive.contentBase64");
@@ -1779,6 +1868,32 @@ function httpStatusCode(error: unknown): number | null {
   }
   const statusCode = (error as { statusCode?: unknown }).statusCode;
   return typeof statusCode === "number" ? statusCode : null;
+}
+
+async function readinessCheck(
+  probe: (() => Promise<void>) | undefined,
+  timeoutMs: number,
+): Promise<"ready" | "unready"> {
+  if (!probe) {
+    return "unready";
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      probe(),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error("Readiness probe timed out.")), timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+    return "ready";
+  } catch {
+    return "unready";
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 function setSecurityHeaders(reply: FastifyReply): void {

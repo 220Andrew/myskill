@@ -21,10 +21,10 @@ npm run docker:up
 npm run db:migrate
 npm run db:seed
 npm run dev:api
-MYSKILLS_TOKEN=<api-token-with-skills-read> npm run dev:mcp
+npm run dev:mcp
 ```
 
-The stdio MCP server defaults to `http://localhost:3001` and reads `MYSKILLS_API_URL` for another API base URL.
+Add a `skills:read` token to the untracked root `.env` as `MYSKILLS_TOKEN` before starting the stdio adapter. The normal MCP dev scripts load that file automatically. The stdio MCP server defaults to `http://localhost:3001` and reads `MYSKILLS_API_URL` for another API base URL.
 
 For Streamable HTTP, start the HTTP adapter and configure clients to call `POST /mcp` with a bearer API token:
 
@@ -33,7 +33,9 @@ npm run dev:mcp:http
 curl http://127.0.0.1:3002/health
 ```
 
-The HTTP adapter defaults to `127.0.0.1:3002/mcp` and reads `MYSKILLS_MCP_HOST`, `MYSKILLS_MCP_PORT`, `MYSKILLS_MCP_PATH`, `MYSKILLS_MCP_ALLOWED_HOSTS`, `MYSKILLS_MCP_ALLOWED_ORIGINS`, and `MYSKILLS_API_URL`. Unlike stdio, HTTP clients authenticate per request with `Authorization: Bearer <api-token-with-skills-read>`; the server validates that token through `/v1/mcp/session` before protocol handling and does not use a shared `MYSKILLS_TOKEN` fallback for HTTP clients. Non-loopback binds must set `MYSKILLS_MCP_ALLOWED_HOSTS`.
+The HTTP adapter defaults to `127.0.0.1:3002/mcp` and reads `MYSKILLS_MCP_HOST`, `MYSKILLS_MCP_PORT`, `MYSKILLS_MCP_PATH`, `MYSKILLS_MCP_ALLOWED_HOSTS`, `MYSKILLS_MCP_ALLOWED_ORIGINS`, `MYSKILLS_MCP_TRUST_PROXY_HOPS`, and `MYSKILLS_API_URL`. Unlike stdio, HTTP clients authenticate per request with `Authorization: Bearer <api-token-with-skills-read>`; the server validates that token through `/v1/mcp/session` before protocol handling and does not use a shared `MYSKILLS_TOKEN` fallback for HTTP clients. Non-loopback binds must set `MYSKILLS_MCP_ALLOWED_HOSTS`.
+
+The HTTP boundary defaults to a bounded 120 requests per minute per socket IP, a 256 KiB request-body limit, bounded header/bucket/connection counts, and finite header/request/upstream/socket lifetimes. `MYSKILLS_MCP_TRUST_PROXY_HOPS` defaults to `0`, so `X-Forwarded-For` is ignored. Set a positive hop count only behind a known, fixed proxy chain; an incorrect value lets clients influence rate-limit identity.
 
 ## Security Rules
 

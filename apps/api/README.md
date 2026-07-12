@@ -2,7 +2,7 @@
 
 Backend API service and trust boundary for MySkills.
 
-Planned responsibilities:
+Responsibilities:
 
 - authentication and sessions
 - authorization decisions
@@ -92,7 +92,7 @@ Auth notification delivery is configured with `AUTH_NOTIFICATION_MODE`:
 
 Production defaults to `smtp` for backward compatibility, rejects `console` and `disabled`, requires `APP_BASE_URL` to use HTTPS, rejects `SMTP_TLS_REJECT_UNAUTHORIZED=false` when SMTP is selected, and builds links only from the configured `APP_BASE_URL`.
 
-Run locally:
+Run locally using the canonical root environment path:
 
 ```bash
 npm install
@@ -103,4 +103,4 @@ npm run db:seed
 npm run dev:api
 ```
 
-`npm run docker:up` starts Postgres, MinIO, and a one-shot bucket initializer for `S3_BUCKET`. The seed command creates a verified owner account from `SEED_OWNER_EMAIL` and `SEED_OWNER_PASSWORD` in `.env`.
+`npm run docker:up` starts Postgres, MinIO, and a one-shot bucket initializer for `S3_BUCKET`. The normal migrate, seed, and API dev scripts load the repository-root `.env` automatically. The seed command creates a verified owner account from `SEED_OWNER_EMAIL` and `SEED_OWNER_PASSWORD` in that untracked file. See [Getting Started](../../docs/GETTING_STARTED.md).

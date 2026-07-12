@@ -107,7 +107,7 @@ test("registry client supports login, MFA verification, current user, and logout
   });
 
   const login = await client.login({ email: "maintainer@example.com", password: "test-password" });
-  const verified = await client.verifyMfa({ challengeToken: "challenge-token", codeOrRecoveryCode: "123456" });
+  await client.verifyMfa({ challengeToken: "challenge-token", codeOrRecoveryCode: "123456" });
   const user = await client.getMe();
   await client.logout();
 
@@ -298,8 +298,8 @@ test("registry client manages admin settings with the session bearer", async () 
   await client.getAdminRegistration("session-token");
   await client.updateAdminRegistration("request", "session-token");
   await client.listAdminUsers("session-token");
-  await client.performAdminUserAction("user-1", "disable", "session-token");
-  await client.updateAdminUserRoles("user-1", ["maintainer", "author"], "session-token");
+  await client.performAdminUserAction("user-1", "disable", "Access review failed", "session-token");
+  await client.updateAdminUserRoles("user-1", ["maintainer", "author"], "Maintainer promotion approved", "session-token");
   await client.listAdminApiTokens("session-token");
   await client.revokeAdminApiToken("api-token-1", "session-token");
   await client.listAdminProviders("session-token");
@@ -336,8 +336,8 @@ test("registry client manages admin settings with the session bearer", async () 
     "Bearer session-token",
   ]);
   assert.equal(calls[1].body, JSON.stringify({ mode: "request" }));
-  assert.equal(calls[3].body, JSON.stringify({ action: "disable" }));
-  assert.equal(calls[4].body, JSON.stringify({ roles: ["maintainer", "author"] }));
+  assert.equal(calls[3].body, JSON.stringify({ action: "disable", reason: "Access review failed" }));
+  assert.equal(calls[4].body, JSON.stringify({ roles: ["maintainer", "author"], reason: "Maintainer promotion approved" }));
   assert.equal(calls[8].body?.includes("groups"), true);
 });
 

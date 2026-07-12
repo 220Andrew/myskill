@@ -36,6 +36,9 @@ test("memory artifact storage writes and reads exact object text", async () => {
     /Artifact object already exists/,
   );
   await assert.rejects(() => storage.getObject("missing.json"), /Artifact object not found/);
+  await storage.checkReady();
+  await storage.deleteObject("submissions/test/0.1.0/artifact.json");
+  await assert.rejects(() => storage.getObject("submissions/test/0.1.0/artifact.json"), /Artifact object not found/);
 });
 
 test("S3 artifact storage maps put and get commands without network", async () => {
@@ -47,11 +50,12 @@ test("S3 artifact storage maps put and get commands without network", async () =
       async send(command: { constructor: { name: string }; input: Record<string, unknown> }) {
         calls.push({ name: command.constructor.name, input: command.input });
         if (command.constructor.name === "GetObjectCommand") {
+          const storedBody = String(command.input.Key).startsWith(".myskills-readiness/") ? "myskills-ready" : body;
           return {
             ContentType: PACKAGE_CONTENT_TYPE,
-            Metadata: { sha256: createHash("sha256").update(body).digest("hex") },
+            Metadata: { sha256: createHash("sha256").update(storedBody).digest("hex") },
             Body: {
-              transformToString: async () => body,
+              transformToString: async () => storedBody,
             },
           };
         }
@@ -72,6 +76,8 @@ test("S3 artifact storage maps put and get commands without network", async () =
     contentType: PACKAGE_CONTENT_TYPE,
     sha256,
   });
+  await storage.checkReady();
+  await storage.deleteObject("submissions/example/0.1.0/artifact.json");
 
   assert.equal(calls[0].name, "PutObjectCommand");
   assert.deepEqual(calls[0].input, {
@@ -88,6 +94,16 @@ test("S3 artifact storage maps put and get commands without network", async () =
     Bucket: "myskills-app-dev",
     Key: "submissions/example/0.1.0/artifact.json",
   });
+  assert.deepEqual(calls.slice(2).map((call) => call.name), [
+    "PutObjectCommand",
+    "GetObjectCommand",
+    "DeleteObjectCommand",
+    "DeleteObjectCommand",
+  ]);
+  assert.match(String(calls[2].input.Key), /^\.myskills-readiness\//);
+  assert.equal(calls[3].input.Key, calls[2].input.Key);
+  assert.equal(calls[4].input.Key, calls[2].input.Key);
+  assert.equal(calls.some((call) => call.name === "HeadBucketCommand"), false);
 });
 
 test("artifact payload reader serves object-backed payloads when metadata matches", async () => {

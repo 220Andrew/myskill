@@ -68,6 +68,18 @@ export interface CompleteRegistrationInvitationResult {
   usedAt: Date;
 }
 
+export interface CompletePasswordResetInput {
+  tokenHash: string;
+  passwordHash: string;
+  now?: Date;
+  usedAt?: Date;
+}
+
+export type AdminUserStatusChangeResult =
+  | { outcome: "updated"; user: AuthUserRecord }
+  | { outcome: "not_found" }
+  | { outcome: "last_owner" };
+
 export interface CreateAuthActionTokenInput {
   userId: string;
   purpose: AuthActionTokenPurpose;
@@ -229,8 +241,17 @@ export interface AuthStore {
   findUserById(userId: string): Promise<AuthUserRecord | null>;
   updateUserEmail(input: { userId: string; email: string; emailVerifiedAt: Date }): Promise<AuthUserRecord | null>;
   updateUserStatus(input: { userId: string; status: UserStatus; emailVerifiedAt?: Date | null }): Promise<AuthUserRecord | null>;
+  applyAdminUserStatusChange(input: {
+    userId: string;
+    status: UserStatus;
+    emailVerifiedAt?: Date | null;
+    protectLastActiveOwner: boolean;
+    revokeCredentials: boolean;
+  }): Promise<AdminUserStatusChangeResult>;
   updateUserRoles(input: { userId: string; roles: AuthenticatedUser["roles"] }): Promise<AuthUserRecord | null>;
+  updateUserRolesAndRevokeCredentials(input: { userId: string; roles: AuthenticatedUser["roles"] }): Promise<AuthUserRecord | null>;
   updatePasswordCredential(input: { userId: string; passwordHash: string; passwordUpdatedAt?: Date }): Promise<boolean>;
+  completePasswordReset(input: CompletePasswordResetInput): Promise<boolean>;
   createAuthActionToken(input: CreateAuthActionTokenInput): Promise<AuthActionTokenRecord>;
   consumeAuthActionToken(input: {
     tokenHash: string;

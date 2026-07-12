@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = repoRoot();
@@ -55,20 +55,23 @@ function scanFile(file) {
   }
 
   const path = join(root, file);
-  if (!existsSync(path)) {
-    return;
+  let descriptor;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ELOOP") return;
+    throw error;
   }
-
-  const stat = statSync(path);
-  if (!stat.isFile()) {
-    return;
-  }
-
-  const text = readFileSync(path, "utf8");
-  for (const pattern of disallowed) {
-    if (pattern.test(text)) {
-      findings.push({ file, pattern: pattern.toString() });
+  try {
+    if (!fstatSync(descriptor).isFile()) return;
+    const text = readFileSync(descriptor, "utf8");
+    for (const pattern of disallowed) {
+      if (pattern.test(text)) {
+        findings.push({ file, pattern: pattern.toString() });
+      }
     }
+  } finally {
+    closeSync(descriptor);
   }
 }
 

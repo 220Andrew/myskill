@@ -1,7 +1,9 @@
 # Product Brief
 
-Version: 0.1.1
-Last updated: 2026-06-18
+Version: 0.1.0-beta.2
+Last updated: 2026-07-13
+
+This brief describes the intended product direction, not a claim that every capability below is implemented or live. The current beta acceptance boundary is [Public Beta Delivery Brief](BETA_RELEASE_GOAL.md); runtime/platform support is [Compatibility](COMPATIBILITY.md); implemented and planned client surfaces are [API, MCP, and CLI](API_MCP_CLI_PLAN.md).
 
 ## Intent
 
@@ -23,7 +25,9 @@ The product should feel like a real software registry, not a folder browser:
 - Instance admins managing users, registration, roles, provider integrations, audit, and settings.
 - AI clients using MCP tools to discover authorized skills and receive installation guidance.
 
-## Product Capabilities
+## Target Product Capabilities
+
+The beta implements the core registry, first-party auth, package submission/review/publication, teams/sharing, lifecycle, web, CLI, and read-only MCP slices. Evals, background workers, external provider login/linking, private draft workspaces, analytics, broader adapters, and business-safe operations remain planned unless the beta ledger says otherwise.
 
 ### Registry
 

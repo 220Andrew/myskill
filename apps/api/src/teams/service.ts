@@ -141,10 +141,31 @@ function cleanTeamName(input: string): string {
 
 function normalizeEmail(input: string): string {
   const email = input.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+  if (!isValidEmailAddress(email)) {
     throw new AppError("Valid email is required.", "INVALID_EMAIL", 400);
   }
   return email;
+}
+
+function isValidEmailAddress(value: string): boolean {
+  if (value.length < 3 || value.length > 254) {
+    return false;
+  }
+  const at = value.indexOf("@");
+  if (at <= 0 || at !== value.lastIndexOf("@") || at > 64) {
+    return false;
+  }
+  const domain = value.slice(at + 1);
+  if (domain.length < 3 || domain.startsWith(".") || domain.endsWith(".") || !domain.includes(".")) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code > 0x7e) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function teamSlug(input: string): string {

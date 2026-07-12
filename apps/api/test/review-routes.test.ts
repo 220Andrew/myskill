@@ -561,6 +561,82 @@ test("release lifecycle actions hide and restore published releases", async (t) 
   assert.equal(visibleResponse.json().release.lifecycleStatus, "approved");
 });
 
+test("only MFA-verified privileged users can restore a maintainer-revoked safe release", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const unverifiedMaintainerToken = await addAndLogin(app, authStore, "unverified-maintainer@example.com", ["maintainer"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const submitted = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  const submissionId = submitted.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+  await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "publish" },
+  });
+  const revoked = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "revoke", reason: "security response" },
+  });
+  assert.equal(revoked.statusCode, 200);
+  const stored = firstStoredSubmission(submissionStore);
+  const approvedArtifactSha256 = stored.approvedArtifactSha256;
+  stored.approvedArtifactSha256 = "0".repeat(64);
+
+  const authorDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: { action: "restore" },
+  });
+  const mfaDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${unverifiedMaintainerToken}` },
+    payload: { action: "restore" },
+  });
+  const unsafeDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "restore" },
+  });
+  stored.approvedArtifactSha256 = approvedArtifactSha256;
+  const restored = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "restore", reason: "scan and artifact revalidated" },
+  });
+
+  assert.equal(authorDenied.statusCode, 403);
+  assert.equal(authorDenied.json().error.code, "RELEASE_RESTORE_ROLE_REQUIRED");
+  assert.equal(mfaDenied.statusCode, 403);
+  assert.equal(mfaDenied.json().error.code, "MFA_VERIFICATION_REQUIRED");
+  assert.equal(unsafeDenied.statusCode, 409);
+  assert.equal(unsafeDenied.json().error.code, "RELEASE_RESTORE_UNSAFE");
+  assert.equal(restored.statusCode, 200);
+  assert.equal(restored.json().release.lifecycleStatus, "approved");
+});
+
 test("publish revalidates the stored package manifest", async (t) => {
   const submissionStore = new MemorySubmissionStore();
   const authStore = new MemoryAuthStore("closed");

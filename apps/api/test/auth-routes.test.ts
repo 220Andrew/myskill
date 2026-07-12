@@ -5,6 +5,7 @@ import { buildApp } from "../src/app.js";
 import { MemoryAuthRateLimiter } from "../src/auth/rate-limit.js";
 import { AuthService, type AuthNotificationSink } from "../src/auth/service.js";
 import { MemoryAuthStore } from "../src/auth/memory-auth-store.js";
+import type { CompletePasswordResetInput } from "../src/auth/types.js";
 import { MemorySkillRepository } from "../src/repositories/memory-skill-repository.js";
 
 function emptySkillRepository() {
@@ -346,7 +347,10 @@ test("active verified accounts can login, call me, and logout", async (t) => {
   const logout = await app.inject({
     method: "POST",
     url: "/v1/auth/logout",
-    headers: { cookie: sessionCookie.split(";")[0] },
+    headers: {
+      cookie: sessionCookie.split(";")[0],
+      origin: "http://localhost:3000",
+    },
   });
   assert.equal(logout.statusCode, 204);
   const clearedCookie = firstSetCookie(logout.headers["set-cookie"], "myskills_session");
@@ -447,16 +451,22 @@ test("password reset requests are generic and successful reset revokes existing 
     url: "/v1/auth/password-reset/request",
     payload: { email: "RESET@example.com" },
   });
+  const siblingRequest = await app.inject({
+    method: "POST",
+    url: "/v1/auth/password-reset/request",
+    payload: { email: "reset@example.com" },
+  });
   const unknown = await app.inject({
     method: "POST",
     url: "/v1/auth/password-reset/request",
     payload: { email: "unknown@example.com" },
   });
   assert.equal(request.statusCode, 202);
+  assert.equal(siblingRequest.statusCode, 202);
   assert.deepEqual(request.json(), { status: "pending" });
   assert.equal(unknown.statusCode, 202);
   assert.deepEqual(unknown.json(), { status: "pending" });
-  assert.equal(outbox.passwordResets.length, 1);
+  assert.equal(outbox.passwordResets.length, 2);
   assertNoSensitiveAuthMaterial(request.json());
 
   const weak = await app.inject({
@@ -493,6 +503,17 @@ test("password reset requests are generic and successful reset revokes existing 
   assert.equal(replay.statusCode, 401);
   assert.equal(replay.json().error.code, "INVALID_RESET_TOKEN");
 
+  const sibling = await app.inject({
+    method: "POST",
+    url: "/v1/auth/password-reset/confirm",
+    payload: {
+      token: outbox.passwordResets[1].token,
+      password: "sibling correct horse battery staple",
+    },
+  });
+  assert.equal(sibling.statusCode, 401);
+  assert.equal(sibling.json().error.code, "INVALID_RESET_TOKEN");
+
   const oldPassword = await app.inject({
     method: "POST",
     url: "/v1/auth/login",
@@ -523,6 +544,57 @@ test("password reset requests are generic and successful reset revokes existing 
     });
     assert.equal(me.statusCode, 401);
   }
+});
+
+test("password reset failure does not consume the token or partially change the password", async (t) => {
+  const authStore = new FailingPasswordResetStore("closed");
+  const outbox = createAuthOutbox();
+  const app = buildApp({
+    skillRepository: emptySkillRepository(),
+    authService: new AuthService(authStore, { notificationSink: outbox.sink }),
+  });
+  t.after(() => app.close());
+  authStore.addUser({
+    id: "reset-failure-user",
+    email: "reset-failure@example.com",
+    status: "active",
+    emailVerifiedAt: new Date(),
+    passwordHash: await hashPassword("correct horse battery staple"),
+  });
+
+  await app.inject({
+    method: "POST",
+    url: "/v1/auth/password-reset/request",
+    payload: { email: "reset-failure@example.com" },
+  });
+  const failed = await app.inject({
+    method: "POST",
+    url: "/v1/auth/password-reset/confirm",
+    payload: {
+      token: outbox.passwordResets[0].token,
+      password: "new correct horse battery staple",
+    },
+  });
+  const oldPasswordStillWorks = await app.inject({
+    method: "POST",
+    url: "/v1/auth/login",
+    payload: {
+      email: "reset-failure@example.com",
+      password: "correct horse battery staple",
+    },
+  });
+  const retry = await app.inject({
+    method: "POST",
+    url: "/v1/auth/password-reset/confirm",
+    payload: {
+      token: outbox.passwordResets[0].token,
+      password: "new correct horse battery staple",
+    },
+  });
+
+  assert.equal(failed.statusCode, 500);
+  assert.equal(oldPasswordStillWorks.statusCode, 200);
+  assert.equal(retry.statusCode, 200);
 });
 
 test("password reset does not issue tokens for unusable accounts and invalid tokens are generic", async (t) => {
@@ -1468,4 +1540,16 @@ function firstSetCookie(header: string | string[] | number | undefined, name: st
   const cookie = values.find((value) => value.startsWith(`${name}=`));
   assert.equal(typeof cookie, "string");
   return cookie;
+}
+
+class FailingPasswordResetStore extends MemoryAuthStore {
+  private failNextReset = true;
+
+  override async completePasswordReset(input: CompletePasswordResetInput): Promise<boolean> {
+    if (this.failNextReset) {
+      this.failNextReset = false;
+      throw new Error("Injected reset failure.");
+    }
+    return super.completePasswordReset(input);
+  }
 }

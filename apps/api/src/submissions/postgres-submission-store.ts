@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { AppError, type SharingSettings, type SkillLifecycleStatus } from "@myskills-app/core";
 import {
   loadSkillManifestFromPackageFiles,
@@ -10,6 +10,7 @@ import type { Database } from "../db/client.js";
 import type { ArtifactObjectStorage } from "../artifacts/storage.js";
 import {
   auditEvents,
+  artifactWriteIntents,
   instanceSettings,
   scanFindings,
   scanRuns,
@@ -62,7 +63,9 @@ export class PostgresSubmissionStore implements SubmissionStore {
     findings: StoredSubmission["scan"]["findings"];
     securityStatus: StoredSubmission["securityStatus"];
   }): Promise<StoredSubmission> {
-    return this.db.transaction(async (tx) => {
+    const recoveryTracked = await this.prepareArtifactWrite(input.artifact);
+    try {
+      const submission: StoredSubmission = await this.db.transaction(async (tx) => {
       const [existingSkill] = await tx
         .select()
         .from(skills)
@@ -134,8 +137,6 @@ export class PostgresSubmissionStore implements SubmissionStore {
       for (const tag of input.manifest.tags) {
         await tx.insert(skillTags).values({ skillId: skill.id, tag }).onConflictDoNothing();
       }
-
-      await this.writeArtifactObject(input.artifact);
 
       await tx.insert(skillArtifacts).values({
         skillVersionId: version.id,
@@ -210,7 +211,65 @@ export class PostgresSubmissionStore implements SubmissionStore {
           findings: input.findings,
         },
       };
-    });
+      });
+      if (recoveryTracked) {
+        try {
+          await this.db.delete(artifactWriteIntents).where(eq(artifactWriteIntents.storageKey, input.artifact.storageKey));
+        } catch {
+          // The durable intent is safe to leave for startup reconciliation after the DB commit.
+        }
+      }
+      return submission;
+    } catch (error) {
+      if (recoveryTracked) {
+        await this.compensateArtifactWrite(input.artifact.storageKey, error);
+      }
+      throw error;
+    }
+  }
+
+  async reconcilePendingArtifactWrites(options: { staleIntentMs?: number; limit?: number } = {}): Promise<{
+    recovered: number;
+    retained: number;
+  }> {
+    if (!this.options.artifactStorage) {
+      return { recovered: 0, retained: 0 };
+    }
+    const staleBefore = new Date(Date.now() - (options.staleIntentMs ?? 15 * 60 * 1000));
+    const rows = await this.db
+      .select()
+      .from(artifactWriteIntents)
+      .where(and(
+        inArray(artifactWriteIntents.state, ["reserved", "object_written"]),
+        lt(artifactWriteIntents.updatedAt, staleBefore),
+      ))
+      .orderBy(artifactWriteIntents.updatedAt)
+      .limit(Math.min(Math.max(options.limit ?? 100, 1), 1000));
+    let recovered = 0;
+    let retained = 0;
+    for (const intent of rows) {
+      const [referenced] = await this.db
+        .select({ id: skillArtifacts.id })
+        .from(skillArtifacts)
+        .where(eq(skillArtifacts.storageKey, intent.storageKey))
+        .limit(1);
+      try {
+        if (!referenced) {
+          await this.options.artifactStorage.deleteObject(intent.storageKey);
+        }
+        await this.db.delete(artifactWriteIntents).where(eq(artifactWriteIntents.storageKey, intent.storageKey));
+        recovered += 1;
+      } catch {
+        retained += 1;
+        await this.db.update(artifactWriteIntents).set({
+          state: "object_written",
+          attempts: sql`${artifactWriteIntents.attempts} + 1`,
+          lastError: "artifact_delete_failed",
+          updatedAt: new Date(),
+        }).where(eq(artifactWriteIntents.storageKey, intent.storageKey));
+      }
+    }
+    return { recovered, retained };
   }
 
   async listUserSubmissions(userId: string): Promise<UserSubmissionSummary[]> {
@@ -251,12 +310,16 @@ export class PostgresSubmissionStore implements SubmissionStore {
       });
       throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
     }
-    await this.db.transaction(async (tx) => {
+    await this.withDurableDenyAudit({
+      action: "submission.withdraw",
+      actorId: input.actorId,
+      submissionId: input.submissionId,
+    }, async (tx) => {
       const row = await selectUserSubmissionStateForUpdate(tx, input.actorId, input.submissionId);
       if (!row) {
         await this.insertReviewAudit("submission.withdraw", "deny", input.actorId, input.submissionId, {
           reason: "not_owner_or_missing",
-        });
+        }, tx);
         throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
       }
       if (row.deletedAt || !submissionAllowedActions(row).includes("withdraw")) {
@@ -264,7 +327,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "not_withdrawable",
-        });
+        }, tx);
         throw new AppError("Submission cannot be withdrawn.", "SUBMISSION_NOT_WITHDRAWABLE", 409);
       }
       const now = new Date();
@@ -456,9 +519,13 @@ export class PostgresSubmissionStore implements SubmissionStore {
       throw new AppError("Approval artifact hash does not match the current submission artifact.", "ARTIFACT_HASH_MISMATCH", 409);
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.withDurableDenyAudit({
+      action: "review.approve",
+      actorId: input.actorId,
+      submissionId: input.submissionId,
+    }, async (tx) => {
       const row = await selectVersionForReviewRevalidation(tx, input.submissionId, preparedArtifactPayloadJson);
-      const currentArtifact = await this.requireApprovableArtifact(row, input);
+      const currentArtifact = await this.requireApprovableArtifact(row, input, tx);
       if (!row) {
         throw new Error("Submission approval revalidation failed.");
       }
@@ -467,7 +534,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "artifact_hash_mismatch",
-        });
+        }, tx);
         throw new AppError("Approval artifact hash does not match the current submission artifact.", "ARTIFACT_HASH_MISMATCH", 409);
       }
 
@@ -489,7 +556,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "stale_submission_state",
-        });
+        }, tx);
         throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
       }
 
@@ -522,12 +589,16 @@ export class PostgresSubmissionStore implements SubmissionStore {
       throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.withDurableDenyAudit({
+      action: "review.request_changes",
+      actorId: input.actorId,
+      submissionId: input.submissionId,
+    }, async (tx) => {
       const row = await selectVersionForReviewState(tx, input.submissionId);
       if (!row) {
         await this.insertReviewAudit("review.request_changes", "deny", input.actorId, input.submissionId, {
           reason: "missing_submission",
-        });
+        }, tx);
         throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
       }
       if (!isActiveReviewRow(row) || !["unreviewed", "changes-requested"].includes(row.reviewStatus)) {
@@ -535,7 +606,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "not_reviewable",
-        });
+        }, tx);
         throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
       }
       const [updatedVersion] = await tx.update(skillVersions).set({
@@ -564,12 +635,16 @@ export class PostgresSubmissionStore implements SubmissionStore {
       throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.withDurableDenyAudit({
+      action: "review.reject",
+      actorId: input.actorId,
+      submissionId: input.submissionId,
+    }, async (tx) => {
       const row = await selectVersionForReviewState(tx, input.submissionId);
       if (!row) {
         await this.insertReviewAudit("review.reject", "deny", input.actorId, input.submissionId, {
           reason: "missing_submission",
-        });
+        }, tx);
         throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
       }
       if (!isActiveReviewRow(row) || !["unreviewed", "changes-requested"].includes(row.reviewStatus)) {
@@ -577,7 +652,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "not_reviewable",
-        });
+        }, tx);
         throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
       }
       const [updatedVersion] = await tx.update(skillVersions).set({
@@ -644,9 +719,13 @@ export class PostgresSubmissionStore implements SubmissionStore {
       throw new AppError("Package manifest does not match the reviewed submission.", "PACKAGE_MANIFEST_MISMATCH", 422);
     }
 
-    return this.db.transaction(async (tx) => {
+    return this.withDurableDenyAudit({
+      action: "release.publish",
+      actorId: input.actorId,
+      submissionId: input.submissionId,
+    }, async (tx) => {
       const row = await selectVersionForReviewRevalidation(tx, input.submissionId, preparedArtifactPayloadJson);
-      const currentArtifact = await this.requirePublishableArtifact(row, input);
+      const currentArtifact = await this.requirePublishableArtifact(row, input, tx);
       if (!row) {
         throw new Error("Submission publication revalidation failed.");
       }
@@ -655,7 +734,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "approved_artifact_hash_mismatch",
-        });
+        }, tx);
         throw new AppError("Approved artifact hash does not match the current submission artifact.", "APPROVED_ARTIFACT_HASH_MISMATCH", 409);
       }
       if (manifest.name !== row.slug || manifest.version !== row.version || manifest.visibility !== row.visibility) {
@@ -663,7 +742,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "manifest_mismatch",
-        });
+        }, tx);
         throw new AppError("Package manifest does not match the reviewed submission.", "PACKAGE_MANIFEST_MISMATCH", 422);
       }
       const now = new Date();
@@ -687,7 +766,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
           slug: row.slug,
           version: row.version,
           reason: "stale_submission_state",
-        });
+        }, tx);
         throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
       }
       await tx.update(skills).set({
@@ -825,11 +904,15 @@ export class PostgresSubmissionStore implements SubmissionStore {
             visibleToActorPredicate(input.actor?.id ?? null, sharing),
           ),
     });
-    return rows.map(releaseSummary);
+    return rows.map((row) => releaseSummary(row, input.actor ?? null));
   }
 
   async performReleaseAction(input: { slug: string; version: string; actor: SubmissionActor; action: ReleaseLifecycleAction; reason?: string; replacement?: string }): Promise<SkillReleaseSummary> {
-    await this.db.transaction(async (tx) => {
+    await this.withDurableDenyAudit({
+      action: `release.${input.action}`,
+      actorId: input.actor.id,
+      details: { slug: input.slug, version: input.version },
+    }, async (tx) => {
       const skill = await findSkillForManagement(tx, input.slug);
       if (!skill) {
         throw new AppError("Release not found.", "RELEASE_NOT_FOUND", 404);
@@ -839,13 +922,21 @@ export class PostgresSubmissionStore implements SubmissionStore {
       if (!row) {
         throw new AppError("Release not found.", "RELEASE_NOT_FOUND", 404);
       }
+      if (input.action === "restore" && row.lifecycleStatus === "revoked") {
+        if (!isPrivilegedReleaseActor(input.actor)) {
+          throw new AppError("Restoring a revoked release requires maintainer permissions.", "RELEASE_RESTORE_ROLE_REQUIRED", 403);
+        }
+        if (!isSafeRevokedRestore(row)) {
+          throw new AppError("Revoked release artifact and scan state must be safe before restore.", "RELEASE_RESTORE_UNSAFE", 409);
+        }
+      }
       const allowed = releaseAllowedActions(row);
       if (!allowed.includes(input.action)) {
         await this.insertReviewAudit(`release.${input.action}`, "deny", input.actor.id, row.id, {
           slug: input.slug,
           version: input.version,
           reason: "action_not_allowed",
-        });
+        }, tx);
         throw new AppError("Release action is not allowed.", "RELEASE_ACTION_NOT_ALLOWED", 409);
       }
       const now = new Date();
@@ -881,7 +972,7 @@ export class PostgresSubmissionStore implements SubmissionStore {
     if (!updated) {
       throw new Error("Release lifecycle update failed.");
     }
-    return releaseSummary(updated);
+    return releaseSummary(updated, input.actor);
   }
 
   async recordReviewDenied(input: {
@@ -982,6 +1073,28 @@ export class PostgresSubmissionStore implements SubmissionStore {
         ...details,
       }),
     });
+  }
+
+  private async withDurableDenyAudit<T>(
+    audit: {
+      action: string;
+      actorId: string;
+      submissionId?: string;
+      details?: Record<string, unknown>;
+    },
+    operation: (tx: Transaction) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.db.transaction(operation);
+    } catch (error) {
+      if (error instanceof AppError) {
+        await this.insertReviewAudit(audit.action, "deny", audit.actorId, audit.submissionId, {
+          ...audit.details,
+          reason: reviewAuditReason(error),
+        });
+      }
+      throw error;
+    }
   }
 
   private async requireApprovableArtifact(
@@ -1122,6 +1235,64 @@ export class PostgresSubmissionStore implements SubmissionStore {
       contentType: artifact.contentType,
       sha256: artifact.sha256,
     });
+  }
+
+  private async prepareArtifactWrite(artifact: StoredSubmission["artifact"]): Promise<boolean> {
+    if (!this.options.artifactStorage) {
+      return false;
+    }
+    await this.db.insert(artifactWriteIntents).values({ storageKey: artifact.storageKey });
+    let putAttempted = false;
+    try {
+      putAttempted = true;
+      await this.writeArtifactObject(artifact);
+      await this.db.update(artifactWriteIntents).set({
+        state: "object_written",
+        updatedAt: new Date(),
+      }).where(eq(artifactWriteIntents.storageKey, artifact.storageKey));
+      return true;
+    } catch (error) {
+      if (putAttempted) {
+        try {
+          await this.options.artifactStorage.deleteObject(artifact.storageKey);
+        } catch (compensationError) {
+          try {
+            await this.db.update(artifactWriteIntents).set({
+              state: "object_written",
+              attempts: sql`${artifactWriteIntents.attempts} + 1`,
+              lastError: "artifact_delete_failed",
+              updatedAt: new Date(),
+            }).where(eq(artifactWriteIntents.storageKey, artifact.storageKey));
+          } catch {
+            // The original reserved intent remains durable for stale-intent reconciliation.
+          }
+          throw new AggregateError([error, compensationError], `Artifact write recovery is pending for ${artifact.storageKey}.`);
+        }
+      }
+      await this.db.delete(artifactWriteIntents).where(eq(artifactWriteIntents.storageKey, artifact.storageKey));
+      throw error;
+    }
+  }
+
+  private async compensateArtifactWrite(storageKey: string, originalError: unknown): Promise<void> {
+    if (!this.options.artifactStorage) {
+      return;
+    }
+    try {
+      await this.options.artifactStorage.deleteObject(storageKey);
+      await this.db.delete(artifactWriteIntents).where(eq(artifactWriteIntents.storageKey, storageKey));
+    } catch (compensationError) {
+      await this.db.update(artifactWriteIntents).set({
+        state: "object_written",
+        attempts: sql`${artifactWriteIntents.attempts} + 1`,
+        lastError: "artifact_delete_failed",
+        updatedAt: new Date(),
+      }).where(eq(artifactWriteIntents.storageKey, storageKey));
+      throw new AggregateError(
+        [originalError, compensationError],
+        `Submission failed and artifact recovery is pending for ${storageKey}.`,
+      );
+    }
   }
 }
 
@@ -1431,11 +1602,21 @@ async function selectSkillReleaseActionStateForUpdate(db: DbLike, input: { slug:
       lifecycleStatus: skillVersions.lifecycleStatus,
       reviewStatus: skillVersions.reviewStatus,
       securityStatus: skillVersions.securityStatus,
+      approvedArtifactSha256: skillVersions.approvedArtifactSha256,
       publishedAt: skillVersions.publishedAt,
       deletedAt: skillVersions.deletedAt,
+      artifactId: skillArtifacts.id,
+      artifactSha256: skillArtifacts.sha256,
+      succeededScanCount: sql<number>`(
+        select count(*)::int
+        from ${scanRuns}
+        where ${scanRuns.skillVersionId} = ${skillVersions.id}
+          and ${scanRuns.status} = 'succeeded'
+      )`,
     })
     .from(skillVersions)
     .innerJoin(skills, eq(skillVersions.skillId, skills.id))
+    .leftJoin(skillArtifacts, eq(skillArtifacts.skillVersionId, skillVersions.id))
     .where(and(eq(skills.slug, input.slug), eq(skillVersions.version, input.version)))
     .for("update", { of: skillVersions })
     .limit(1);
@@ -1444,7 +1625,8 @@ async function selectSkillReleaseActionStateForUpdate(db: DbLike, input: { slug:
 
 type SkillReleaseRow = Awaited<ReturnType<typeof selectSkillReleaseRows>>[number];
 
-function releaseSummary(row: SkillReleaseRow): SkillReleaseSummary {
+function releaseSummary(row: SkillReleaseRow, actor: SubmissionActor | null = null): SkillReleaseSummary {
+  const allowedActions = releaseAllowedActions(row);
   return {
     id: row.id,
     slug: row.slug,
@@ -1455,8 +1637,34 @@ function releaseSummary(row: SkillReleaseRow): SkillReleaseSummary {
     publishedAt: row.publishedAt?.toISOString() ?? null,
     platforms: row.platforms,
     findingCount: row.findingCount,
-    allowedActions: releaseAllowedActions(row),
+    allowedActions: row.lifecycleStatus === "revoked" && !isPrivilegedReleaseActor(actor)
+      ? allowedActions.filter((action) => action !== "restore")
+      : allowedActions,
   };
+}
+
+function isPrivilegedReleaseActor(actor: SubmissionActor | null): boolean {
+  return Boolean(actor?.roles.some((role) => role === "owner" || role === "admin" || role === "maintainer"));
+}
+
+function isSafeRevokedRestore(row: {
+  reviewStatus: ReviewSubmissionSummary["reviewStatus"];
+  securityStatus: ReviewSubmissionSummary["securityStatus"];
+  approvedArtifactSha256: string | null;
+  publishedAt: Date | null;
+  deletedAt: Date | null;
+  artifactId: string | null;
+  artifactSha256: string | null;
+  succeededScanCount: number;
+}): boolean {
+  return row.reviewStatus === "approved" &&
+    row.securityStatus === "passed" &&
+    Boolean(row.publishedAt) &&
+    !row.deletedAt &&
+    Boolean(row.artifactId) &&
+    row.succeededScanCount > 0 &&
+    Boolean(row.approvedArtifactSha256) &&
+    row.approvedArtifactSha256 === row.artifactSha256;
 }
 
 function reviewAllowedActions(row: {
@@ -1568,6 +1776,29 @@ function reviewResultFromVersion(row: { slug: string; visibility: ReviewVersionR
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function reviewAuditReason(error: AppError): string {
+  const reasons: Record<string, string> = {
+    SUBMISSION_NOT_FOUND: "missing_submission",
+    SUBMISSION_NOT_WITHDRAWABLE: "not_withdrawable",
+    SUBMISSION_NOT_REVIEWABLE: "not_reviewable",
+    ARTIFACT_HASH_MISMATCH: "artifact_hash_mismatch",
+    APPROVED_ARTIFACT_HASH_MISMATCH: "approved_artifact_hash_mismatch",
+    PACKAGE_MANIFEST_MISMATCH: "manifest_mismatch",
+    PACKAGE_SCAN_NOT_PASSED: "scan_not_passed",
+    PACKAGE_SCAN_REQUIRED: "missing_succeeded_scan",
+    PACKAGE_ARTIFACT_REQUIRED: "missing_artifact_metadata",
+    APPROVED_ARTIFACT_HASH_REQUIRED: "missing_approved_artifact_hash",
+    SUBMISSION_NOT_APPROVED: "not_approved",
+    SUBMISSION_ALREADY_PUBLISHED: "already_published",
+    RELEASE_NOT_FOUND: "missing_release",
+    RELEASE_ACTION_NOT_ALLOWED: "action_not_allowed",
+    RELEASE_RESTORE_ROLE_REQUIRED: "privileged_restore_required",
+    RELEASE_RESTORE_UNSAFE: "unsafe_release_state",
+    SKILL_MANAGEMENT_ROLE_REQUIRED: "skill_management_role_required",
+  };
+  return reasons[error.code] ?? error.code.toLowerCase();
 }
 
 async function selectVersionForReview(db: DbLike, submissionId: string) {

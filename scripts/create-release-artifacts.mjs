@@ -2,15 +2,11 @@
 
 import { createHash } from "node:crypto";
 import {
-  existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
-  rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const args = parseArgs(process.argv.slice(2));
@@ -146,22 +142,27 @@ function prepareOutputDir(dir) {
   ) {
     fail(`Release output directory must be a non-hidden subdirectory of ${releaseRoot}.`);
   }
-  if (existsSync(dir) && !lstatSync(dir).isDirectory()) {
-    fail(`Release output path exists and is not a directory: ${dir}`);
-  }
   const trackedEntries = git(["ls-files", "--", relative(root, dir)]).trim();
   if (trackedEntries) {
     fail(`Release output directory contains tracked files and cannot be cleaned: ${dir}`);
   }
-  rmSync(dir, { recursive: true, force: true });
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dirname(dir), { recursive: true });
+  try {
+    mkdirSync(dir);
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      fail("Release output directory already exists. Remove the previous untracked output before generating artifacts.");
+    }
+    throw error;
+  }
 }
 
 function artifactRecord(path) {
+  const contents = readFileSync(path);
   return {
     file: basename(path),
-    byteSize: statSync(path).size,
-    sha256: createHash("sha256").update(readFileSync(path)).digest("hex"),
+    byteSize: contents.byteLength,
+    sha256: createHash("sha256").update(contents).digest("hex"),
   };
 }
 

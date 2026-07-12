@@ -35,7 +35,7 @@ test("landing page explains public beta status and opens the login page", async 
   assert.equal(document.body.textContent?.includes("Public beta. Hosted signups are owner-gated."), true);
   assert.equal(client.searchCalls.length, 0);
 
-  fireEvent.click(view.getAllByRole("button", { name: "Login" })[0]!);
+  fireEvent.click(view.getAllByRole("link", { name: "Login" })[0]!);
 
   await view.findByRole("heading", { name: "Login" });
   assert.deepEqual(client.searchCalls, []);
@@ -43,16 +43,16 @@ test("landing page explains public beta status and opens the login page", async 
   assert.equal(window.location.pathname, "/login");
 });
 
-test("anonymous registry routes resolve to login without loading skills", async () => {
+test("anonymous registry routes load approved public skills without a session", async () => {
   setupDom("http://localhost/registry");
   const client = mockClient();
 
   const view = render(<RegistryApp client={client} />);
 
-  await view.findByRole("heading", { name: "Login" });
-  assert.deepEqual(client.searchCalls, []);
-  assert.equal(document.body.textContent?.includes("Release Notes Helper"), false);
-  assert.equal(window.location.pathname, "/login");
+  await view.findByText("Release Notes Helper");
+  assert.deepEqual(client.searchCalls, [""]);
+  assert.equal(document.body.textContent?.includes("owner@example.com"), false);
+  assert.equal(window.location.pathname, "/skills/release-notes-helper");
 });
 
 test("browse page requests skills with query and renders API-returned skills", async () => {
@@ -61,7 +61,7 @@ test("browse page requests skills with query and renders API-returned skills", a
 
   const view = render(<RegistryApp client={client} />);
   await view.findByText("Release Notes Helper");
-  fireEvent.input(view.getByPlaceholderText("Search skills..."), { target: { value: "release" } });
+  fireEvent.input(view.getByLabelText("Search skills"), { target: { value: "release" } });
 
   await waitFor(() => assert.equal(client.searchCalls.includes("release"), true));
   assert.equal(view.getAllByText("release-notes-helper").length, 2);
@@ -123,7 +123,7 @@ test("searching selects a matching result when the current detail is filtered ou
   const view = render(<RegistryApp client={client} />);
   await view.findByText("Smoke-only detail.");
 
-  fireEvent.input(view.getByPlaceholderText("Search skills..."), { target: { value: "release" } });
+  fireEvent.input(view.getByLabelText("Search skills"), { target: { value: "release" } });
 
   await view.findByText("Turns merged changes into concise release notes.");
   assert.equal(document.body.textContent?.includes("Smoke-only detail."), false);
@@ -157,6 +157,35 @@ test("skill detail displays public metadata and release artifact metadata only",
   assert.equal(client.bundleCalls, 0);
 });
 
+test("privileged skill controls stay locked without an MFA-verified session and do not request management data", async () => {
+  const owner = authUser({ email: "owner@example.com", roles: ["owner"], mfaVerified: false });
+  setupAuthenticatedDom("http://localhost/skills/release-notes-helper", owner);
+  const managedSkill: PublicSkill = { ...publicSkill(), access: { canManageSharing: true, reasons: ["owner", "public"] } };
+  const client = mockClient({ skills: [managedSkill], user: owner });
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByRole("heading", { name: "Lifecycle and sharing controls are locked", level: 2 });
+  assert.equal(view.queryByRole("region", { name: "Skill lifecycle controls" }), null);
+  assert.equal(view.queryByRole("region", { name: "Sharing controls" }), null);
+  assert.equal(client.releaseManagementCalls, 0);
+  assert.equal(client.sharingDetailCalls, 0);
+});
+
+test("MFA-verified managers can load lifecycle and sharing controls", async () => {
+  const owner = authUser({ email: "owner@example.com", roles: ["owner"], mfaVerified: true });
+  setupAuthenticatedDom("http://localhost/skills/release-notes-helper", owner);
+  const managedSkill: PublicSkill = { ...publicSkill(), access: { canManageSharing: true, reasons: ["owner", "public"] } };
+  const client = mockClient({ skills: [managedSkill], user: owner });
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByRole("region", { name: "Skill lifecycle controls" });
+  await view.findByRole("region", { name: "Sharing controls" });
+  assert.equal(client.releaseManagementCalls, 1);
+  assert.equal(client.sharingDetailCalls, 1);
+});
+
 test("404 detail responses render generic not found state", async () => {
   setupAuthenticatedDom("http://localhost/skills/private-helper");
   const client = mockClient({
@@ -180,8 +209,64 @@ test("platform selection changes CLI export guidance only", async () => {
   fireEvent.click(view.getByRole("button", { name: "generic" }));
 
   await view.findByText(/myskills export 'release-notes-helper' --version '0\.1\.0' --platform 'generic'/);
+  assert.equal(window.location.search, "?platform=generic");
   assert.equal(client.releaseCalls.length, 1);
   assert.equal(client.bundleCalls, 0);
+});
+
+test("URL state and popstate restore search, selection, platform, and active navigation", async () => {
+  setupAuthenticatedDom("http://localhost/skills/release-notes-helper?q=release&platform=generic");
+  const client = mockClient();
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByText(/--platform 'generic'/);
+  assert.equal((view.getByLabelText("Search skills") as HTMLInputElement).value, "release");
+  const selectedResult = view.getByRole("link", { name: /Release Notes Helper/ });
+  assert.equal(selectedResult.getAttribute("aria-current"), "true");
+  assert.equal(selectedResult.getAttribute("href"), "/skills/release-notes-helper?q=release&platform=generic");
+  const modifiedClick = new window.MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true });
+  selectedResult.dispatchEvent(modifiedClick);
+  assert.equal(modifiedClick.defaultPrevented, false);
+  assert.equal(view.getAllByRole("link", { name: "Registry" })[0]?.getAttribute("aria-current"), "page");
+
+  fireEvent.click(view.getAllByRole("link", { name: "Settings" })[0]!);
+  await view.findByRole("heading", { name: "Security and access", level: 1 });
+  assert.equal(window.location.pathname, "/settings");
+
+  window.history.replaceState({}, "", "/skills/release-notes-helper?q=release&platform=generic");
+  window.dispatchEvent(new window.PopStateEvent("popstate"));
+
+  await view.findByText(/--platform 'generic'/);
+  assert.equal((view.getByLabelText("Search skills") as HTMLInputElement).value, "release");
+  assert.equal(window.location.pathname, "/skills/release-notes-helper");
+});
+
+test("unknown routes render an explicit not-found view", async () => {
+  setupDom("http://localhost/missing-page");
+
+  const view = render(<RegistryApp client={mockClient()} />);
+
+  await view.findByRole("heading", { name: "Page not found", level: 1 });
+  assert.equal(view.getByRole("link", { name: "Return home" }).getAttribute("href"), "/");
+});
+
+test("copy actions announce success to assistive technology", async (t) => {
+  setupAuthenticatedDom("http://localhost/skills/release-notes-helper");
+  const writes: string[] = [];
+  const originalClipboard = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (value: string) => { writes.push(value); } },
+  });
+  t.after(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard }));
+
+  const view = render(<RegistryApp client={mockClient()} />);
+  await view.findByText(/myskills export/);
+  fireEvent.click(view.getByRole("button", { name: "Copy" }));
+
+  await view.findByText("Copied to clipboard.");
+  assert.equal(writes[0]?.includes("myskills export"), true);
 });
 
 test("login stores session metadata without persisting bearer tokens and logout clears it", async () => {
@@ -195,7 +280,7 @@ test("login stores session metadata without persisting bearer tokens and logout 
 
   await view.findByText("reader@example.com");
   await view.findByText("Release Notes Helper");
-  assert.equal(window.location.pathname, "/registry");
+  assert.equal(window.location.pathname, "/skills/release-notes-helper");
   assert.equal(document.body.textContent?.includes("web-session-token"), false);
   const stored = JSON.parse(window.localStorage.getItem("myskills-app:web-session") ?? "{}") as Record<string, unknown>;
   assert.equal("token" in stored, false);
@@ -252,7 +337,7 @@ test("signed-in users can set up MFA and save recovery codes", async () => {
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("owner@example.com");
-  fireEvent.click(view.getByRole("button", { name: "Settings" }));
+  fireEvent.click(view.getAllByRole("link", { name: "Settings" })[0]!);
   await view.findByText("Authenticator app not set");
   fireEvent.input(view.getAllByLabelText("Current password").at(-1)!, { target: { value: "correct horse battery staple" } });
   fireEvent.click(view.getByRole("button", { name: /continue/i }));
@@ -308,7 +393,22 @@ test("settings can create and revoke API keys", async () => {
   assert.deepEqual(client.apiTokenCreates, [{ name: "MCP client", scopes: ["skills:read", "skills:submit"] }]);
 
   fireEvent.click(view.getByLabelText("Revoke CLI"));
+  fireEvent.click(await view.findByRole("button", { name: "Revoke key" }));
   await waitFor(() => assert.deepEqual(client.apiTokenRevokes, ["api-token-1"]));
+});
+
+test("API key expiry rejects past dates before sending a request", async () => {
+  setupAuthenticatedDom("http://localhost/settings", authUser({ email: "owner@example.com", roles: ["owner"] }));
+  const client = mockClient({ user: authUser({ email: "owner@example.com", roles: ["owner"] }) });
+  const view = render(<RegistryApp client={client} />);
+  await view.findByText("API keys");
+
+  fireEvent.input(view.getByLabelText("Key name"), { target: { value: "Expired key" } });
+  fireEvent.input(view.getByLabelText("Expires at"), { target: { value: "2020-01-01T00:00" } });
+  fireEvent.click(view.getByRole("button", { name: /create key/i }));
+
+  await view.findByText("Choose a valid future date and time.");
+  assert.deepEqual(client.apiTokenCreates, []);
 });
 
 test("non-admin sessions do not render the admin entry point", async () => {
@@ -321,8 +421,19 @@ test("non-admin sessions do not render the admin entry point", async () => {
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("reader@example.com");
-  assert.equal(view.queryByRole("button", { name: /admin/i }), null);
-  assert.equal(view.queryByRole("button", { name: /review/i }), null);
+  assert.equal(view.queryByRole("link", { name: /admin/i }), null);
+  assert.equal(view.queryByRole("link", { name: /review/i }), null);
+});
+
+test("role-gated deep links normalize to the public registry when access is denied", async () => {
+  setupAuthenticatedDom("http://localhost/admin", authUser({ roles: ["author"] }));
+  const client = mockClient({ user: authUser({ roles: ["author"] }) });
+
+  const view = render(<RegistryApp client={client} />);
+
+  await view.findByText("Release Notes Helper");
+  assert.equal(window.location.pathname, "/skills/release-notes-helper");
+  assert.equal(view.queryByRole("heading", { name: "Admin console" }), null);
 });
 
 test("signed-in users can open the teams workspace", async () => {
@@ -350,7 +461,7 @@ test("admin sessions can manage registration, users, and provider metadata", asy
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("owner@example.com");
-  fireEvent.click(view.getByRole("button", { name: /admin/i }));
+  fireEvent.click(view.getAllByRole("link", { name: "Admin" })[0]!);
 
   await view.findByRole("heading", { name: "Admin console", level: 1 });
   await view.findByRole("button", { name: "Refresh" });
@@ -361,30 +472,29 @@ test("admin sessions can manage registration, users, and provider metadata", asy
   assert.equal((view.getByLabelText("Set author@example.com author role") as HTMLInputElement).disabled, true);
 
   fireEvent.click(view.getByLabelText("Revoke CLI"));
+  fireEvent.click(await view.findByRole("button", { name: "Revoke key" }));
   await waitFor(() => assert.deepEqual(client.adminTokenRevokes, ["api-token-1"]));
 
   fireEvent.click(view.getByRole("button", { name: "Request" }));
   await waitFor(() => assert.deepEqual(client.registrationUpdates, ["request"]));
 
-  const originalConfirm = window.confirm;
-  window.confirm = () => false;
   fireEvent.click(view.getByRole("button", { name: "Open" }));
   assert.deepEqual(client.registrationUpdates, ["request"]);
+  fireEvent.click(await view.findByRole("button", { name: "Cancel" }));
 
-  window.confirm = () => true;
   fireEvent.click(view.getByRole("button", { name: "Open" }));
+  fireEvent.click(await view.findByRole("button", { name: "Open registration" }));
   await waitFor(() => assert.deepEqual(client.registrationUpdates, ["request", "open"]));
 
-  window.confirm = () => true;
-  try {
-    fireEvent.click(view.getByLabelText("Disable user"));
-    await waitFor(() => assert.deepEqual(client.userActions, ["user-2:disable"]));
-  } finally {
-    window.confirm = originalConfirm;
-  }
+  fireEvent.click(view.getByLabelText("Disable user"));
+  fireEvent.input(view.getByLabelText("Reason (required)"), { target: { value: "Access review failed" } });
+  fireEvent.click((await view.findAllByRole("button", { name: "Disable user" })).at(-1)!);
+  await waitFor(() => assert.deepEqual(client.userActions, ["user-2:disable:Access review failed"]));
 
   fireEvent.click(view.getByLabelText("Set author@example.com maintainer role"));
-  await waitFor(() => assert.deepEqual(client.roleUpdates, ["user-2:maintainer,author"]));
+  fireEvent.input(view.getByLabelText("Reason (required)"), { target: { value: "Maintainer promotion approved" } });
+  fireEvent.click(await view.findByRole("button", { name: "Save role change" }));
+  await waitFor(() => assert.deepEqual(client.roleUpdates, ["user-2:maintainer,author:Maintainer promotion approved"]));
   await waitFor(() => assert.equal((view.getByLabelText("Set author@example.com maintainer role") as HTMLInputElement).checked, true));
 
   fireEvent.input(view.getByLabelText("Display name"), { target: { value: "Cloudflare Main" } });
@@ -418,7 +528,7 @@ test("non-owner admin sessions cannot edit privileged target role controls", asy
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("admin@example.com");
-  fireEvent.click(view.getByRole("button", { name: /admin/i }));
+  fireEvent.click(view.getAllByRole("link", { name: "Admin" })[0]!);
 
   await view.findByRole("button", { name: "Refresh" });
   assert.equal((view.getByLabelText("Set owner@example.com maintainer role") as HTMLInputElement).disabled, true);
@@ -460,8 +570,8 @@ test("maintainer sessions download an artifact hash before approving review subm
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("maintainer@example.com");
-  assert.equal(view.queryByRole("button", { name: /admin/i }), null);
-  fireEvent.click(view.getByRole("button", { name: /review/i }));
+  assert.equal(view.queryByRole("link", { name: /admin/i }), null);
+  fireEvent.click(view.getAllByRole("link", { name: "Review" })[0]!);
 
   await view.findByText("Review dashboard");
   await waitFor(() => assert.equal(view.getAllByText("release-notes-helper@0.1.0").length >= 1, true));
@@ -478,11 +588,47 @@ test("maintainer sessions download an artifact hash before approving review subm
   const downloadedText = await downloadedBlob!.text();
   assert.equal(artifactTextSha256(downloadedText), expectedArtifactHash);
   fireEvent.click(view.getByRole("button", { name: /approve/i }));
+  fireEvent.click(await view.findByRole("button", { name: "Approve submission" }));
   await waitFor(() => assert.deepEqual(client.reviewActions, [`submission-1:approve:checked:${expectedArtifactHash}`]));
 
   fireEvent.click(view.getByRole("button", { name: /publish/i }));
-  await waitFor(() => assert.deepEqual(client.reviewActions, [`submission-1:approve:checked:${expectedArtifactHash}`, "submission-1:publish::"]));
+  fireEvent.input(view.getAllByRole("textbox").at(-1)!, { target: { value: "release ready" } });
+  fireEvent.click(view.getByRole("button", { name: "Publish release" }));
+  await waitFor(() => assert.deepEqual(client.reviewActions, [`submission-1:approve:checked:${expectedArtifactHash}`, "submission-1:publish:release ready:"]));
   await view.findByText("Review queue is clear.");
+});
+
+test("review confirmations require a meaningful reason and recover from API errors", async () => {
+  setupAuthenticatedDom("http://localhost/review", authUser({ email: "maintainer@example.com", roles: ["maintainer"] }));
+  const client = mockClient({ user: authUser({ email: "maintainer@example.com", roles: ["maintainer"] }) });
+  client.performReviewAction = async () => new Promise((_, reject) => {
+    setTimeout(() => reject(safeApiError(409, "REVIEW_FAILED", "database secret")), 50);
+  });
+
+  const view = render(<RegistryApp client={client} />);
+  await view.findByText("Review dashboard");
+  const rejectTrigger = await view.findByRole("button", { name: "Reject" });
+  rejectTrigger.focus();
+  fireEvent.click(rejectTrigger);
+
+  const confirm = view.getByRole("button", { name: "Reject submission" }) as HTMLButtonElement;
+  await waitFor(() => assert.equal(document.activeElement, view.getByRole("heading", { name: "Reject this submission?" })));
+  fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+  assert.equal(document.activeElement, view.getByRole("button", { name: "Cancel" }));
+  fireEvent.keyDown(window, { key: "Tab" });
+  assert.equal(document.activeElement, view.getByLabelText("Reason (required)"));
+  assert.equal(confirm.disabled, true);
+  fireEvent.input(view.getByLabelText("Reason (required)"), { target: { value: "no" } });
+  assert.equal(confirm.disabled, true);
+  fireEvent.input(view.getByLabelText("Reason (required)"), { target: { value: "unsafe package" } });
+  assert.equal(confirm.disabled, false);
+  fireEvent.click(confirm);
+  await view.findByRole("button", { name: "Working…" });
+
+  assert.equal((await view.findByRole("alert")).textContent, "Review action could not be completed.");
+  assert.equal((view.getByRole("button", { name: "Reject submission" }) as HTMLButtonElement).disabled, false);
+  fireEvent.click(view.getByRole("button", { name: "Cancel" }));
+  assert.equal(document.activeElement, view.getByRole("button", { name: "Reject" }));
 });
 
 test("author sessions can submit a package archive without rendering package content", async () => {
@@ -495,7 +641,7 @@ test("author sessions can submit a package archive without rendering package con
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("author@example.com");
-  fireEvent.click(view.getByRole("button", { name: /submit/i }));
+  fireEvent.click(view.getAllByRole("link", { name: "Submit" })[0]!);
 
   await view.findByText("Submit package");
   const archive = new File(["PK archive content"], "release-notes-helper.zip", { type: "application/zip" });
@@ -540,7 +686,7 @@ test("submission result renders controlled scan warnings", async () => {
   fireEvent.click(view.getByRole("button", { name: /sign in/i }));
 
   await view.findByText("author@example.com");
-  fireEvent.click(view.getByRole("button", { name: /submit/i }));
+  fireEvent.click(view.getAllByRole("link", { name: "Submit" })[0]!);
   fireEvent.change(await view.findByLabelText(/choose \.zip package/i), {
     target: { files: [new File(["warning zip"], "warning-skill.zip", { type: "application/zip" })] },
   });
@@ -604,7 +750,7 @@ afterEach(() => {
   window.localStorage.clear();
 });
 
-function setupDom(url = "http://localhost/registry") {
+function setupDom(url = "http://localhost/login") {
   document.body.innerHTML = "";
   window.localStorage.clear();
   window.history.replaceState({}, "", url);
@@ -670,6 +816,7 @@ function mockClient(input: {
     providerUpserts: Array<{ key: string; displayName: string; roleMappings?: ProviderRoleMappingInput[] }>;
     registrationUpdates: AdminRegistrationMode[];
     releaseCalls: string[];
+    releaseManagementCalls: number;
     reviewActions: string[];
     reviewBundleCalls: string[];
     roleUpdates: string[];
@@ -681,6 +828,7 @@ function mockClient(input: {
     teamInvites: string[];
     teamInvitationAccepts: string[];
     sharingUpdates: Array<{ slug: string; visibility: string; teamIds: string[]; userEmails: string[] }>;
+    sharingDetailCalls: number;
   } = {
     adminTokenRevokes: [],
     apiTokenCreates: [],
@@ -698,6 +846,7 @@ function mockClient(input: {
     providerUpserts: [],
     registrationUpdates: [],
     releaseCalls: [],
+    releaseManagementCalls: 0,
     reviewActions: [],
     reviewBundleCalls: [],
     roleUpdates: [],
@@ -709,6 +858,7 @@ function mockClient(input: {
     teamInvites: [],
     teamInvitationAccepts: [],
     sharingUpdates: [],
+    sharingDetailCalls: 0,
     async searchSkills(query) {
       client.searchCalls.push(query);
       return input.searchResults?.(query) ?? skills;
@@ -743,6 +893,9 @@ function mockClient(input: {
           expiresAt: "2026-06-04T01:00:00.000Z",
           user: currentUser,
         };
+    },
+    async registerWithInvitation() {
+      return { status: "active" };
     },
     async requestPasswordReset(input) {
       client.passwordResetRequests.push(input.email);
@@ -847,19 +1000,28 @@ function mockClient(input: {
       client.registrationUpdates.push(mode);
       return { mode };
     },
+    async createRegistrationInvitation() {
+      throw new Error("Registration invitations are not used by this web mock.");
+    },
+    async getAdminSharing() {
+      throw new Error("Admin sharing is not used by this web mock.");
+    },
+    async updateAdminSharing() {
+      throw new Error("Admin sharing is not used by this web mock.");
+    },
     async listAdminUsers() {
       return adminUsers;
     },
-    async performAdminUserAction(userId, action) {
-      client.userActions.push(`${userId}:${action}`);
+    async performAdminUserAction(userId, action, reason) {
+      client.userActions.push(`${userId}:${action}:${reason ?? ""}`);
       adminUsers = adminUsers.map((user) => user.id === userId ? {
         ...user,
         status: action === "disable" ? "disabled" : action === "delete" ? "deleted" : "active",
       } : user);
       return adminUsers.find((user) => user.id === userId) ?? defaultAdminUsers()[0];
     },
-    async updateAdminUserRoles(userId, roles) {
-      client.roleUpdates.push(`${userId}:${roles.join(",")}`);
+    async updateAdminUserRoles(userId, roles, reason) {
+      client.roleUpdates.push(`${userId}:${roles.join(",")}:${reason}`);
       adminUsers = adminUsers.map((user) => user.id === userId ? { ...user, roles } : user);
       return adminUsers.find((user) => user.id === userId) ?? defaultAdminUsers()[0];
     },
@@ -918,6 +1080,9 @@ function mockClient(input: {
         ],
       };
     },
+    async performSubmissionAction() {
+      throw new Error("Submission lifecycle is not used by this web mock.");
+    },
     async listReviewSubmissions() {
       return reviewSubmissions;
     },
@@ -956,8 +1121,22 @@ function mockClient(input: {
         lifecycleStatus: "approved",
         reviewStatus: "approved",
         securityStatus: "passed",
+        approvedArtifactSha256: null,
         publishedAt: "2026-06-04T00:00:00.000Z",
       };
+    },
+    async listSkillReleases() {
+      client.releaseManagementCalls += 1;
+      return [];
+    },
+    async updateSkillMetadata() {
+      throw new Error("Skill metadata is not used by this web mock.");
+    },
+    async performSkillAction() {
+      throw new Error("Skill lifecycle is not used by this web mock.");
+    },
+    async performReleaseAction() {
+      throw new Error("Release lifecycle is not used by this web mock.");
     },
     async listTeams() {
       client.listTeamCalls += 1;
@@ -993,6 +1172,7 @@ function mockClient(input: {
       return teamSharedGroups;
     },
     async getSkillSharing() {
+      client.sharingDetailCalls += 1;
       return sharingDetails;
     },
     async updateSkillSharing(input) {
@@ -1108,6 +1288,7 @@ function defaultUserSubmission(input: Partial<UserSubmissionSummary> = {}): User
     summary: input.summary ?? "Turns merged changes into concise release notes.",
     version: input.version ?? "0.1.0",
     visibility: input.visibility ?? "public",
+    lifecycleStatus: input.lifecycleStatus ?? "approved",
     reviewStatus: input.reviewStatus ?? "approved",
     securityStatus: input.securityStatus ?? "passed",
     platforms: input.platforms ?? [{ name: "codex", installTarget: "codex-skill", status: "supported" }],
@@ -1119,6 +1300,7 @@ function defaultUserSubmission(input: Partial<UserSubmissionSummary> = {}): User
     },
     createdAt: input.createdAt ?? "2026-06-14T00:00:00.000Z",
     publishedAt: input.publishedAt ?? "2026-06-14T00:00:00.000Z",
+    allowedActions: input.allowedActions ?? ["export"],
   };
 }
 
@@ -1288,6 +1470,7 @@ function publicRelease(): ReleaseMetadata {
     title: "Release Notes Helper",
     summary: "Turns merged changes into concise release notes.",
     version: "0.1.0",
+    lifecycleStatus: "approved",
     reviewStatus: "approved",
     securityStatus: "passed",
     publishedAt: "2026-06-04T00:00:00.000Z",

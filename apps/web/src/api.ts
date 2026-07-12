@@ -329,8 +329,8 @@ export interface RegistryClient {
   getAdminSharing(token?: string): Promise<AdminSharingSettings>;
   updateAdminSharing(settings: AdminSharingSettings, token?: string): Promise<AdminSharingSettings>;
   listAdminUsers(token?: string): Promise<AdminUser[]>;
-  performAdminUserAction(userId: string, action: "approve" | "activate" | "disable" | "delete", token?: string): Promise<AdminUser>;
-  updateAdminUserRoles(userId: string, roles: string[], token?: string): Promise<AdminUser>;
+  performAdminUserAction(userId: string, action: "approve" | "activate" | "disable" | "delete", reason?: string, token?: string): Promise<AdminUser>;
+  updateAdminUserRoles(userId: string, roles: string[], reason: string, token?: string): Promise<AdminUser>;
   listAdminApiTokens(token?: string): Promise<AdminApiToken[]>;
   revokeAdminApiToken(tokenId: string, token?: string): Promise<AdminApiToken>;
   listAdminProviders(token?: string): Promise<AdminProviderConfig[]>;
@@ -574,19 +574,23 @@ export function createRegistryClient(baseUrl = defaultApiBaseUrl(), fetchImpl: t
       });
       return body.users;
     },
-    async performAdminUserAction(userId, action, overrideToken) {
+    async performAdminUserAction(userId, action, reason, overrideToken) {
       const body = await requestJson<{ user: AdminUser }>(
         fetchImpl,
         `${root}/v1/admin/users/${encodeURIComponent(userId)}/actions`,
-        { method: "POST", body: { action }, token: overrideToken ?? token },
+        {
+          method: "POST",
+          body: { action, ...(reason?.trim() ? { reason: reason.trim() } : {}) },
+          token: overrideToken ?? token,
+        },
       );
       return body.user;
     },
-    async updateAdminUserRoles(userId, roles, overrideToken) {
+    async updateAdminUserRoles(userId, roles, reason, overrideToken) {
       const body = await requestJson<{ user: AdminUser }>(
         fetchImpl,
         `${root}/v1/admin/users/${encodeURIComponent(userId)}/roles`,
-        { method: "PUT", body: { roles }, token: overrideToken ?? token },
+        { method: "PUT", body: { roles, reason: reason.trim() }, token: overrideToken ?? token },
       );
       return body.user;
     },

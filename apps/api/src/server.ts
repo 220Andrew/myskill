@@ -16,6 +16,9 @@ const port = Number.parseInt(process.env.PORT ?? "3001", 10);
 const host = process.env.HOST ?? "0.0.0.0";
 const pool = createPgPool();
 const db = createDb(pool);
+const artifactStorage = createArtifactObjectStorageFromEnv(process.env);
+const submissionStore = new PostgresSubmissionStore(db, { artifactStorage });
+await submissionStore.reconcilePendingArtifactWrites();
 const app = buildApp({
   skillRepository: new PostgresSkillRepository(db),
   authService: new AuthService(new PostgresAuthStore(db), {
@@ -29,14 +32,32 @@ const app = buildApp({
     authActionTokenLimiter: new PostgresAuthRateLimiter(pool, { maxAttempts: 10, windowMs: 15 * 60 * 1000 }),
     notificationSink: createAuthNotificationSinkFromEnv(process.env),
   }),
-  submissionService: new SubmissionService(new PostgresSubmissionStore(db, {
-    artifactStorage: createArtifactObjectStorageFromEnv(process.env),
-  })),
+  submissionService: new SubmissionService(submissionStore),
   teamService: new TeamService(new PostgresTeamStore(db)),
   allowedOrigins: allowedOrigins(),
   trustProxy: trustProxy(),
+  requestLimiter: new PostgresAuthRateLimiter(pool, { maxAttempts: 600, windowMs: 60_000 }),
+  readinessProbes: {
+    postgres: async () => {
+      await pool.query("SELECT 1");
+    },
+    artifactStorageRequired: Boolean(artifactStorage),
+    artifactStorage: artifactStorage ? () => artifactStorage.checkReady() : undefined,
+  },
   logger: process.env.NODE_ENV !== "test",
 });
+const artifactReconciliationTimer = artifactStorage
+  ? setInterval(() => {
+      void submissionStore.reconcilePendingArtifactWrites().then(({ retained }) => {
+        if (retained > 0) {
+          app.log.warn({ retained }, "Artifact recovery intents remain pending.");
+        }
+      }).catch((error: unknown) => {
+        app.log.error({ err: error }, "Artifact recovery reconciliation failed.");
+      });
+    }, 15 * 60 * 1000)
+  : undefined;
+artifactReconciliationTimer?.unref();
 
 try {
   await app.listen({ port, host });
@@ -47,6 +68,9 @@ try {
 }
 
 const shutdown = async () => {
+  if (artifactReconciliationTimer) {
+    clearInterval(artifactReconciliationTimer);
+  }
   await app.close();
   await pool.end();
 };

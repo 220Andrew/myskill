@@ -30,12 +30,10 @@ npm run dev:api
 npm run dev:web
 ```
 
-The web app defaults to `http://localhost:3000` and reads `VITE_API_BASE_URL` for the API base URL.
+The web dev script loads the repository-root `.env` automatically. The app defaults to `http://localhost:3000` and reads `VITE_API_BASE_URL` for the API base URL. See [Getting Started](../../docs/GETTING_STARTED.md).
 
-## Planned Workflows
+## Planned Follow-Ups
 
-- browse/search/filter skills
-- view skill details and install/export guidance
 - manage private drafts
 - polish version-history browsing
 - administer remaining instance settings

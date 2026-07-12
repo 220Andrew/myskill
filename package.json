@@ -12,8 +12,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "audit:prod": "npm audit --omit=dev",
-    "check": "npm run check:structure && npm run check:privacy && npm run scan:secrets && npm run audit:prod && npm run build && npm run check:prerelease && npm run test",
-    "check:prerelease": "npm run build -w @myskills-app/skill-package && node scripts/check-prerelease.mjs",
+    "check": "npm run check:structure && npm run check:privacy && npm run scan:secrets && npm run audit:prod && npm run lint && npm run build && npm run typecheck:web && npm run check:prerelease && npm run test",
+    "check:prerelease": "npm run build -w @myskills-app/skill-package && npm run build -w @jarel/myskills && node scripts/check-prerelease.mjs && npm run smoke:cli-package",
     "check:prod-env": "node scripts/check-production-env.mjs",
     "check:privacy": "node scripts/check-privacy.mjs",
     "check:structure": "node scripts/check-structure.mjs",
@@ -25,14 +25,30 @@
     "dev:web": "npm run dev -w @myskills-app/web",
     "docker:down": "docker compose down",
     "docker:up": "docker compose up -d postgres minio minio-init",
+    "lint": "eslint . --max-warnings=0",
     "release:artifacts": "node scripts/create-release-artifacts.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
     "scan:secrets": "node scripts/scan-secrets.mjs",
+    "smoke:cli-package": "node scripts/smoke-cli-package.mjs",
+    "start:api": "npm run start -w @myskills-app/api",
     "start:mcp:http": "npm run start:http -w @myskills-app/mcp",
-    "test": "npm test --workspaces --if-present",
-    "test:postgres": "npm run build && npm run test:postgres -w @myskills-app/api"
+    "test": "npm run test:tooling && npm test --workspaces --if-present",
+    "test:e2e:fullstack": "node scripts/run-fullstack-e2e.mjs",
+    "test:postgres": "npm run build && npm run test:postgres -w @myskills-app/api",
+    "test:tooling": "node --test scripts/test/release-tooling.test.mjs",
+    "typecheck:web": "npm run typecheck -w @myskills-app/web"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13 <23 || >=24 <25"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.1",
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
+    "typescript-eslint": "^8.63.0"
   },
   "packageManager": "npm@11.12.1"
 }

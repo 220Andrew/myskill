@@ -10,28 +10,53 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  check-supported-node:
+    name: Check / Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - 22.x
+          - 24.x
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
+      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
       - run: npm ci
       - run: npm run check
 
+  # Preserve the existing required `check` context while making it aggregate
+  # both supported Node lines.
+  check:
+    name: check
+    if: always()
+    needs: check-supported-node
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every supported Node check
+        env:
+          RESULT: ${{ needs.check-supported-node.result }}
+        run: test "$RESULT" = "success"
+
   web-e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.x
           cache: npm
+      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e -w @myskills-app/web
+      - name: Run production-like API and web journey
+        run: npm run test:e2e:fullstack
 
   postgres-integration:
     runs-on: ubuntu-latest
@@ -53,8 +78,9 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.x
           cache: npm
+      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
       - run: npm ci
       - run: npm run test:postgres
         env:

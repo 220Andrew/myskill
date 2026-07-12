@@ -578,6 +578,12 @@ class MutatingArtifactStorage implements ArtifactObjectStorage {
     }
     return object;
   }
+
+  async deleteObject(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
+
+  async checkReady(): Promise<void> {}
 }
 
 async function insertUser(db: ReturnType<typeof createDb>, email: string, name: string) {

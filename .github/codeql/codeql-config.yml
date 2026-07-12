@@ -1,0 +1,11 @@
+name: MySkills CodeQL configuration
+
+# Fastify applies one Postgres-backed limiter in buildApp's onRequest hook before
+# every route (health/readiness use a separate bounded probe bucket). The Node
+# HTTP MCP server applies its own bounded IP limiter before its MCP route. CodeQL
+# does not connect either central handler to individual route declarations.
+# Prerelease checks enforce both limiter/429 source and test invariants, so this
+# excludes only the structurally false-positive route-local rate-limit query.
+query-filters:
+  - exclude:
+      id: js/missing-rate-limiting

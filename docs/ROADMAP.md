@@ -1,18 +1,19 @@
 # Roadmap
 
 Version: 0.1.0-beta.2
-Last updated: 2026-06-30
+Last updated: 2026-07-13
 
 ## Release Tracks
 
 - **Responsible public alpha (`v0.1.0-alpha.0`)**: archived release track for the first public repository and reproducible source artifact gate.
-- **Public beta release**: make external trial use credible with branch protection, support/contribution surfaces, compatibility documentation, upgrade policy, issue templates, changelog, and fresh-clone rehearsal. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
-- **Short-term domain**: point `myskills.sh` to the public `myskills` repository until the website exists.
-- **Business-safe production release**: harden the beta into an operator-ready release with stronger audit, background scanning, skill evals, provider lifecycle, artifact delivery, CLI credential storage, deploy/ops guidance, and upgrade policy. See [BUSINESS_SAFE_RELEASE_GOAL.md](BUSINESS_SAFE_RELEASE_GOAL.md).
+- **Public beta (`v0.1.0-beta.1`)**: live external trial track with owner-controlled hosted access and documented self-hosting boundaries.
+- **Beta follow-up (`v0.1.0-beta.2`)**: current candidate for local onboarding, artifact/review safety, public CLI packaging, static quality gates, release discipline, and reconciled docs. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
+- **Hosted beta**: `myskills.sh` serves the web/API application; live Railway state must be read back before claiming a candidate is deployed.
+- **Business-safe production release**: harden the beta into an operator-ready release with stronger audit, background scanning, skill evals, provider lifecycle, artifact delivery, trusted publishing, deploy/ops guidance, and upgrade policy. See [BUSINESS_SAFE_RELEASE_GOAL.md](BUSINESS_SAFE_RELEASE_GOAL.md).
 
 ## Current Focus
 
-- Close the public-beta readiness gate: support/contribution/changelog surfaces, compatibility and upgrade expectations, default-branch protection, GitHub security settings, clean first-run rehearsal, and release notes.
+- Close the beta.2 acceptance ledger with a clean canonical gate, fresh-clone local rehearsal, default-branch/tag protection readback, staging/user-test evidence, and explicit release approval.
 - Keep production-hardening items tracked without blocking beta unless they close accepted beta risk.
 - Complete the remaining web-app MVP gaps that affect first-user clarity: private draft management, version-history polish, instance settings administration, and the broader identity-system refresh.
 - Preserve the API as the canonical registry and trust boundary for sync-related work; local and connected-tool state should reconcile through reviewable changes, not silent overwrites.
@@ -30,7 +31,7 @@ Last updated: 2026-06-30
 
 Goal: create a clean product repo and public-ready plan.
 
-Acceptance:
+Historical acceptance:
 
 - Private personal repo exists.
 - Public-safe README, architecture, auth, data, API/MCP/CLI, security, and roadmap docs exist.
@@ -85,7 +86,7 @@ Remaining:
 
 Blocking next release:
 
-- Public beta blockers are tracked in [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md). Remaining production items above move to Milestone 9 unless they close an accepted beta risk.
+- Beta.2 acceptance is tracked in [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md). Remaining production items above stay in Milestone 9 unless they close an accepted beta risk.
 
 ## Milestone 2: Auth And User Management Foundation
 
@@ -278,6 +279,8 @@ Done:
 - Production Docker targets, production Compose example, and production env preflight.
 - Public-safe example skill package.
 - Deterministic prerelease check.
+- Self-contained public CLI tarball smoke with exact file allowlist and clean offline install.
+- ESLint and explicit web typecheck gates on supported Node LTS lines.
 - Tag-triggered release artifact workflow.
 - Public visibility switch.
 - First reproducible beta tag.
@@ -285,8 +288,9 @@ Done:
 
 Blocking next release:
 
-- Fresh-clone rehearsal.
-- Beta follow-up tag for the security, review, deployment, and CI fixes from the post-beta review.
+- Fresh-clone local and staging/user-test rehearsal against the immutable beta.2 candidate commit.
+- Live GitHub branch/tag rules and security-setting readback.
+- Explicit tag, distribution, and production-deploy approvals.
 
 ## Milestone 9: Business-Safe Production Release
 
@@ -319,10 +323,11 @@ Goal: build a full website for MySkills at `myskills.sh`.
 
 Depends on: Milestone 8 for public-release positioning. The site can start before Milestone 9.
 
-Short-term:
+Current foundation:
 
-- Make the repository public as `myskills`.
-- Point `myskills.sh` to the public GitHub repository or a minimal redirect page.
+- The repository is public as `jremick/myskills`.
+- `myskills.sh` serves the owner-controlled beta application.
+- The repository remains the canonical documentation and self-hosting surface until a separate docs/product site is delivered.
 
 Deliverables:
 

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateTotpCode, hashPassword } from "@myskills-app/auth";
+import { generateTotpCode, hashPassword, type Role } from "@myskills-app/auth";
+import { AppError } from "@myskills-app/core";
 import { buildApp } from "../src/app.js";
 import { AuthService, type AuthNotificationSink } from "../src/auth/service.js";
 import { MemoryAuthStore } from "../src/auth/memory-auth-store.js";
@@ -664,6 +665,41 @@ test("role updates enforce owner, self-lockout, deleted-user, and invalid-role s
   assert.equal(invalid.json().error.code, "INVALID_ADMIN_USER_ROLES");
 });
 
+test("atomic last-owner role denials are recorded after the store race check", async (t) => {
+  const authStore = new AtomicRoleDenialStore("closed");
+  const app = buildAdminApp(authStore);
+  t.after(() => app.close());
+  const ownerSession = await addAndLoginWithMfa(app, authStore, {
+    id: "owner-1",
+    email: "owner@example.com",
+    roles: ["owner"],
+  });
+  await addUser(authStore, {
+    id: "owner-2",
+    email: "owner-two@example.com",
+    status: "active",
+    emailVerifiedAt: new Date(),
+    roles: ["owner"],
+  });
+  authStore.deniedUserId = "owner-2";
+
+  const denied = await app.inject({
+    method: "PUT",
+    url: "/v1/admin/users/owner-2/roles",
+    headers: { authorization: `Bearer ${ownerSession}` },
+    payload: { roles: ["user"] },
+  });
+  const audit = await authStore.listAuditEvents({ limit: 10 });
+
+  assert.equal(denied.statusCode, 409);
+  assert.equal(denied.json().error.code, "LAST_OWNER_REQUIRED");
+  assert.equal(audit.some((event) => (
+    event.action === "admin.user.roles.update" &&
+    event.decision === "deny" &&
+    event.details.reason === "last_owner_required"
+  )), true);
+});
+
 test("admin user actions reject missing users and invalid actions without mutation", async (t) => {
   const authStore = new MemoryAuthStore("closed");
   const app = buildAdminApp(authStore);
@@ -1182,4 +1218,15 @@ async function createApiToken(
   });
   assert.equal(response.statusCode, 201);
   return response.json().token.token;
+}
+
+class AtomicRoleDenialStore extends MemoryAuthStore {
+  deniedUserId: string | null = null;
+
+  override async updateUserRolesAndRevokeCredentials(input: { userId: string; roles: Role[] }) {
+    if (input.userId === this.deniedUserId) {
+      throw new AppError("At least one active owner is required.", "LAST_OWNER_REQUIRED", 409);
+    }
+    return super.updateUserRolesAndRevokeCredentials(input);
+  }
 }

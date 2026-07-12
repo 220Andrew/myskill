@@ -437,7 +437,7 @@ export class MemorySubmissionStore implements SubmissionStore {
     return submissions
       .filter((submission) => canManage || isPubliclyVisibleRelease(submission, skillLifecycle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(releaseSummary);
+      .map((submission) => releaseSummary(submission, input.actor ?? null));
   }
 
   async performReleaseAction(input: { slug: string; version: string; actor: SubmissionActor; action: ReleaseLifecycleAction; reason?: string; replacement?: string }): Promise<SkillReleaseSummary> {
@@ -446,6 +446,24 @@ export class MemorySubmissionStore implements SubmissionStore {
       throw new AppError("Release not found.", "RELEASE_NOT_FOUND", 404);
     }
     assertCanManageSkill(submission, input.actor);
+    if (input.action === "restore" && submission.lifecycleStatus === "revoked") {
+      if (!isPrivilegedReleaseActor(input.actor)) {
+        this.recordAudit("release.restore", "deny", input.actor.id, {
+          slug: input.slug,
+          version: input.version,
+          reason: "privileged_restore_required",
+        });
+        throw new AppError("Restoring a revoked release requires maintainer permissions.", "RELEASE_RESTORE_ROLE_REQUIRED", 403);
+      }
+      if (!isSafeRevokedRestore(submission)) {
+        this.recordAudit("release.restore", "deny", input.actor.id, {
+          slug: input.slug,
+          version: input.version,
+          reason: "unsafe_release_state",
+        });
+        throw new AppError("Revoked release artifact and scan state must be safe before restore.", "RELEASE_RESTORE_UNSAFE", 409);
+      }
+    }
     const allowed = releaseAllowedActions(submission);
     if (!allowed.includes(input.action)) {
       this.recordAudit(`release.${input.action}`, "deny", input.actor.id, {
@@ -599,7 +617,8 @@ function restoredSkillLifecycle(submissions: StoredSubmission[]): SkillLifecycle
   return "archived";
 }
 
-function releaseSummary(submission: StoredSubmission): SkillReleaseSummary {
+function releaseSummary(submission: StoredSubmission, actor: SubmissionActor | null = null): SkillReleaseSummary {
+  const allowedActions = releaseAllowedActions(submission);
   return {
     id: submission.id,
     slug: submission.skillSlug,
@@ -610,8 +629,23 @@ function releaseSummary(submission: StoredSubmission): SkillReleaseSummary {
     publishedAt: submission.publishedAt,
     platforms: submission.platforms,
     findingCount: submission.scan.findings.length,
-    allowedActions: releaseAllowedActions(submission),
+    allowedActions: submission.lifecycleStatus === "revoked" && !isPrivilegedReleaseActor(actor)
+      ? allowedActions.filter((action) => action !== "restore")
+      : allowedActions,
   };
+}
+
+function isPrivilegedReleaseActor(actor: SubmissionActor | null): boolean {
+  return Boolean(actor?.roles.some((role) => role === "owner" || role === "admin" || role === "maintainer"));
+}
+
+function isSafeRevokedRestore(submission: StoredSubmission): boolean {
+  return submission.reviewStatus === "approved" &&
+    submission.securityStatus === "passed" &&
+    submission.scan.status === "succeeded" &&
+    Boolean(submission.publishedAt) &&
+    Boolean(submission.approvedArtifactSha256) &&
+    submission.approvedArtifactSha256 === submission.artifact.sha256;
 }
 
 function reviewSubmissionSummary(submission: StoredSubmission, skillLifecycle?: SkillLifecycleStatus): ReviewSubmissionSummary {

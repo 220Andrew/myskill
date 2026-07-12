@@ -1,9 +1,9 @@
 # Railway Deployment
 
 Version: 0.1.0-beta.2
-Last updated: 2026-06-30
+Last updated: 2026-07-13
 
-This is the first live deployment shape for `myskills.sh`.
+This is the maintained deployment runbook for the owner-controlled public beta at `myskills.sh`. Live Railway readback on 2026-07-13 showed beta.1 commit `6120a95`: re-check deployment IDs and commit IDs before making a current-state claim.
 
 ## Railway Project
 
@@ -16,14 +16,24 @@ Do not deploy this project into any team or work Railway workspace.
 
 ## Services
 
-- `web`: static Vite landing page and owner-gated registry shell. The current live service builds from the root `Dockerfile` web stage.
-- `api`: Fastify API. The current live service is deployed separately from the same project source.
+- `web`: Vite browser assets served by nginx with an `/api` proxy. The live service builds `Dockerfile.web`.
+- `api`: Fastify API deployed separately from the same project source/commit. The live service builds `Dockerfile.api`.
 - `Postgres`: managed Railway Postgres.
 - `artifacts`: Railway Storage Bucket for S3-compatible package artifact storage.
 
-The optional HTTP MCP service is intentionally not part of the first public private-development launch.
+The optional HTTP MCP service is not part of the maintained live beta service set.
 
-The root `Dockerfile` contains the active `web`, `api`, and `mcp-http` targets used by this deployment shape.
+`Dockerfile.api` and `Dockerfile.web` are the current Railway image sources. The root multi-target `Dockerfile` is used by the production Compose example and release verification, not by the live Railway services. All three build app workspaces with Node 22 LTS; production starts use injected variables and do not copy the local `.env` into images.
+
+## Live Gaps Requiring Promotion Approval
+
+As of the 2026-07-13 readback:
+
+- Railway service `healthcheckPath` is unset. Configure the API service to use `/ready` (not shallow `/health`) before relying on platform health-gated promotion; configure the web service healthcheck deliberately as well.
+- The live API did not have `TRUST_PROXY` set. The production preflight now rejects an omitted value. Before promotion, set a bounded hop count/address list that matches the actual Railway proxy path, or explicitly set `false` only when forwarded client IPs are intentionally ignored. Do not guess and do not use broad `true`.
+- Production remains beta.1 until Railway readback proves API and web are running the same approved beta.2 commit.
+
+These are documented release blockers/gaps, not changes applied to Railway by this repository pass.
 
 ## Domains
 
@@ -34,6 +44,7 @@ The root `Dockerfile` contains the active `web`, `api`, and `mcp-http` targets u
 The web build must receive `VITE_API_BASE_URL=/api` so browser auth and registry requests stay same-origin on `myskills.sh`.
 The web runtime must receive `API_PROXY_TARGET=https://api.myskills.sh` so nginx forwards `/api/*` to the API service without requiring the user's browser DNS cache to resolve `api.myskills.sh`.
 The API must receive `APP_BASE_URL=https://myskills.sh`, `ALLOWED_WEB_ORIGINS=https://myskills.sh,https://www.myskills.sh`, and a bounded `TRUST_PROXY` value so auth rate limits use the forwarded client IP from Railway/nginx.
+The Railway nginx template sets `client_max_body_size 14m` so valid bounded package uploads reach the API; do not remove it or fall back to nginx's 1 MiB default.
 
 ## Required Web Variables
 
@@ -73,7 +84,7 @@ Set these in Railway secret/config variables, not in repo files:
 
 `S3_ENDPOINT` must use HTTPS in production. Only set `S3_ALLOW_INSECURE_ENDPOINT=true` for an explicitly trusted private-network object store; do not use it for internet-routable endpoints.
 
-SMTP remains supported for self-hosted deployments, but the Railway production deployment should use Resend's HTTPS API because outbound SMTP depends on Railway plan/network restrictions. The private-development deployment currently keeps registration closed; public account email flows should not be opened until Resend delivery is fully configured and verified.
+SMTP remains supported for self-hosted deployments, but the Railway production deployment should use Resend's HTTPS API because outbound SMTP depends on Railway plan/network restrictions. The hosted beta keeps registration owner-controlled; public account email flows should not be opened until delivery and abuse controls are explicitly approved and verified.
 
 ## Resend Setup
 
@@ -109,9 +120,11 @@ After bootstrap:
 
 ```bash
 curl https://api.myskills.sh/health
+curl https://api.myskills.sh/ready
 curl https://api.myskills.sh/v1/skills
 curl https://myskills.sh/health
 curl https://myskills.sh/api/health
+curl https://myskills.sh/api/ready
 ```
 
 During DNS cache propagation, use a public DoH resolver for deterministic checks:
@@ -119,6 +132,7 @@ During DNS cache propagation, use a public DoH resolver for deterministic checks
 ```bash
 curl --doh-url https://cloudflare-dns.com/dns-query https://myskills.sh/health
 curl --doh-url https://cloudflare-dns.com/dns-query https://api.myskills.sh/health
+curl --doh-url https://cloudflare-dns.com/dns-query https://api.myskills.sh/ready
 ```
 
 ## Iteration Deployment Loop
@@ -130,4 +144,4 @@ The current live project is intentionally manual but can be made easier without 
 3. Redeploy the `api` and `web` Railway services from the same commit.
 4. Run the smoke checks above and a browser login/export check before calling the iteration live.
 
-Next automation target: a GitHub Actions workflow that runs `npm run check`, deploys the Railway services with scoped Railway project tokens, and reports the resulting deployment URLs and health checks back to the pull request.
+The release workflow is intentionally verification-only and does not deploy Railway. Follow the staging, production approval, and rollback boundary in [Release Process](RELEASE.md). Any future deploy automation must use scoped project credentials, preserve a separate staging/user-test step, require explicit production approval, deploy API and web from the same commit, and report resulting deployment IDs plus health/browser readback.

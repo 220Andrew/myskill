@@ -271,7 +271,15 @@ export const skillArtifacts = pgTable("skill_artifacts", {
   contentType: text("content_type").notNull(),
   payload: jsonb("payload").notNull().default({ files: [] }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [index("skill_artifacts_skill_version_idx").on(table.skillVersionId)]);
+}, (table) => [unique("skill_artifacts_skill_version_unique").on(table.skillVersionId)]);
+
+export const artifactWriteIntents = pgTable("artifact_write_intents", {
+  storageKey: text("storage_key").primaryKey(),
+  state: text("state").notNull().default("reserved"),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  ...timestamps,
+}, (table) => [index("artifact_write_intents_state_idx").on(table.state, table.updatedAt)]);
 
 export const skillTags = pgTable("skill_tags", {
   skillId: uuid("skill_id").notNull().references(() => skills.id, { onDelete: "cascade" }),

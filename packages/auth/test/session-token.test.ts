@@ -1,12 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createApiToken, createSessionToken, hashApiToken, hashSessionToken } from "../src/session-token.js";
+import {
+  API_TOKEN_BYTES,
+  SESSION_TOKEN_BYTES,
+  createApiToken,
+  createSessionToken,
+  hashApiToken,
+  hashSessionToken,
+} from "../src/session-token.js";
 
 test("creates opaque session tokens and stable hashes", () => {
   const token = createSessionToken();
   const other = createSessionToken();
 
   assert.notEqual(token, other);
+  assert.equal(Buffer.from(token, "base64url").byteLength, SESSION_TOKEN_BYTES);
   assert.equal(hashSessionToken(token), hashSessionToken(token));
   assert.notEqual(hashSessionToken(token), hashSessionToken(other));
 });
@@ -16,6 +24,7 @@ test("creates opaque API tokens and stable hashes", () => {
   const other = createApiToken();
 
   assert.equal(token.startsWith("aiss_"), true);
+  assert.equal(Buffer.from(token.slice("aiss_".length), "base64url").byteLength, API_TOKEN_BYTES);
   assert.notEqual(token, other);
   assert.equal(hashApiToken(token), hashApiToken(token));
   assert.notEqual(hashApiToken(token), hashApiToken(other));

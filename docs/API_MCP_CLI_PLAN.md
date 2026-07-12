@@ -1,155 +1,80 @@
-# API, MCP, And CLI Plan
+# API, MCP, And CLI
 
-Version: 0.1.2
-Last updated: 2026-06-18
+Version: 0.1.0-beta.2
+Last updated: 2026-07-13
 
 ## Shared Rule
 
-API, web, CLI, and MCP must ask the same backend for authorization. No client surface may reimplement access rules as a substitute for server-side decisions.
+API, web, CLI, and MCP use the same API-owned authorization, sharing, lifecycle, review, and artifact decisions. Client surfaces must not reproduce those policies as substitutes for server checks.
 
-The current web slice consumes backend API decisions for login, current-user refresh, public skill search, skill detail, release metadata, export guidance, author archive submission, author withdrawal, maintainer review artifact download, maintainer review actions, owner/admin lifecycle controls, and owner/admin console operations. Browser auth uses token-free login/MFA responses plus credentialed `myskills_session` cookie requests; CLI and API-token flows use explicit bearer credentials. The web app must not fetch public bundle payloads during metadata browsing or reimplement authorization policy in client code.
+## Implemented API Surface
 
-## API Surface
+The Fastify API currently provides:
 
-Milestone 1 REST endpoints:
+- health and versioned capability discovery (`GET /health`, `GET /v1/capabilities`);
+- email/password, verification, password reset, email change, session, MFA, invitation, and account flows;
+- scoped API-token creation/list/revocation and MFA-gated admin token inventory/revocation;
+- registration, user/role, provider metadata/mapping, audit, sharing, and team administration;
+- public skill search/detail and approved release metadata/bundle delivery;
+- authenticated package submission, owned-submission export/withdrawal, maintainer artifact download, hash-attested review/publication, and skill/release lifecycle controls;
+- MCP token authorization through `GET /v1/mcp/session`.
 
-- `GET /health`
-- `GET /v1/me`
-- `POST /v1/auth/email-verification/request`
-- `POST /v1/auth/email-verification/confirm`
-- `POST /v1/auth/password-reset/request`
-- `POST /v1/auth/password-reset/confirm`
-- `GET /v1/auth/api-tokens`
-- `POST /v1/auth/api-tokens`
-- `DELETE /v1/auth/api-tokens/:id`
-- `GET /v1/skills`
-- `GET /v1/skills/:slug`
-- `GET /v1/skills/:slug/releases`
-- `GET /v1/skills/:slug/releases/:version`
-- `GET /v1/skills/:slug/releases/:version/bundle?platform=...`
-- `POST /v1/submissions`
-- `GET /v1/submissions/mine`
-- `GET /v1/submissions/:id/bundle`
-- `POST /v1/submissions/:id/actions`
-- `GET /v1/review/submissions`
-- `GET /v1/review/submissions/:id/bundle?platform=...`
-- `POST /v1/review/submissions/:id/actions`
-- `PUT /v1/skills/:slug`
-- `POST /v1/skills/:slug/actions`
-- `POST /v1/skills/:slug/releases/:version/actions`
+[API App](../apps/api/README.md) is the maintained route-level inventory. Public OpenAPI output is planned; it should be generated from, and verified against, implemented route schemas rather than maintained as a second hand-written source.
 
-Milestone 2-3 REST endpoints:
+Browser auth uses token-free login/MFA responses followed by credentialed `myskills_session` cookie requests. CLI and API-token flows use explicit bearer credentials. Metadata browsing does not fetch package contents.
 
-- `POST /v1/drafts`
-- `GET /v1/drafts`
-- `GET /v1/admin/users`
-- `POST /v1/admin/users/:id/actions`
-- `PUT /v1/admin/users/:id/roles`
-- `GET /v1/admin/registration`
-- `PUT /v1/admin/registration`
-- `GET /v1/admin/providers`
-- `PUT /v1/admin/providers/:key`
-- `GET /v1/admin/audit`
+## Planned API Work
 
-Later eval endpoints:
+- Private draft endpoints separate from submitted versions.
+- Provider login/linking and external identity lifecycle.
+- Durable background scan/eval run endpoints and safe eval summaries.
+- Signed/direct artifact delivery with the same authorization and audit guarantees.
+- Generated OpenAPI once route schemas cover the stable beta surface.
 
-- `GET /v1/skills/:slug/releases/:version/evals`
-- `POST /v1/evals/runs`
-- `GET /v1/evals/runs/:id`
-- `GET /v1/review/submissions/:id/evals`
+## Implemented MCP Surface
 
-Current admin API slice implements MFA-verified session-only registration mode read/update, MFA-verified registration invitations, non-secret provider config and claim-to-role mapping management, safe user listing, user status actions, role editing with owner-only privileged-role safeguards, sanitized mutation audit events, and bounded audit listing. Provider login/linking and external identity lifecycle remain planned.
+The official TypeScript MCP SDK backs:
 
-Use OpenAPI once the first implementation slice stabilizes.
+- a stdio server;
+- a stateless Streamable HTTP server;
+- `search_skills`;
+- `get_skill_info`;
+- `get_install_instructions`.
 
-## MCP Surface
+Calls require an API token with `skills:read` through the API-owned MCP session check. Interactive sessions are rejected. HTTP authenticates each request and does not use a shared server token. MCP tools return metadata and install/export guidance, not package contents.
 
-Use the official TypeScript MCP SDK for production implementation if runtime constraints allow it. Current SDK docs support MCP servers with tools and Streamable HTTP transports over common Node frameworks.
+Planned MCP work is limited to role-gated maintainer/admin reads, authoritative per-tool audit events, and broader client compatibility evidence. Write tools remain deferred.
 
-Current implementation uses the stable TypeScript MCP SDK with stdio and stateless Streamable HTTP transports. MCP calls require an API token with `skills:read` scope through `GET /v1/mcp/session`; interactive session tokens are rejected for the MCP surface. Every MCP session authorization branch writes a sanitized API-owned `mcp.session` audit event with the allow/deny decision, credential kind, required scope, and reason code. The stdio adapter reads `MYSKILLS_TOKEN`; the HTTP adapter validates each request bearer through `/v1/mcp/session` before MCP protocol handling, requires each client request to send its own `Authorization: Bearer ...` header, applies host/origin guardrails, and does not fall back to a shared server token.
+## Implemented CLI Surface
 
-Initial tools:
+The public `@jarel/myskills` bundle currently supports:
 
-- `search_skills`: search approved skills visible to the authenticated user.
-- `get_skill_info`: return safe metadata for one authorized skill.
-- `get_install_instructions`: return CLI install/export guidance without package contents.
+- version, local validate, and local scan;
+- local-first API URL config, password/API-key login, MFA completion, logout, auth status, and doctor diagnostics;
+- search, info, verified export, local install/list/update/rollback;
+- directory or `.zip` submission, owned-submission list/withdrawal;
+- maintainer review queue, bundle inspection, and review/publication actions;
+- skill metadata/lifecycle and release lifecycle controls;
+- team and sharing administration;
+- API-token create/list/revoke.
 
-Maintainer/admin read-only tools:
+[CLI App](../apps/cli/README.md) is the command-level source of truth. Browser/device login, package init/archive creation, and platform-specific install adapters are planned and should not appear as implemented commands.
 
-- `list_submissions`
-- `get_submission`
-- `run_stale_skill_checks`
-- `get_registry_analytics`
-
-Write tools and per-tool MCP audit events are deferred until the review workflow and an authoritative tool-execution audit model are stable.
-
-MCP responses must not return package contents by default. Package delivery should go through API or CLI flows with explicit authorization and audit.
-
-## CLI Surface
-
-Initial commands:
-
-```text
-myskills login
-myskills logout
-myskills whoami
-myskills auth status
-myskills doctor
-myskills config get api-url
-myskills config set api-url <url>
-myskills config reset api-url
-myskills config list
-myskills init <skill-slug>
-myskills validate --path <dir-or-zip>
-myskills scan --path <dir-or-zip>
-myskills package --path <dir> --output <file.zip>
-myskills search [query]
-myskills info <skill>
-myskills install <skill> --platform <platform>
-myskills export <skill> --platform <platform> --output <dir>
-myskills list
-myskills update [skill]
-myskills rollback <skill>
-myskills submit --path <dir-or-zip>
-myskills review submissions
-myskills review bundle <submission-id> [--platform <name>] [--output <file>] [--api-url <url>] [--token <token>]
-myskills review action <submission-id> --action <approve|request-changes|reject|publish> [--artifact-sha256 <hash>] --reason <reason> [--api-url <url>] [--token <token>]
-myskills submissions list
-myskills submissions withdraw <submission-id> --reason <reason> [--api-url <url>] [--token <token>]
-myskills skills edit <skill-slug> [--title <text>] [--summary <text>] [--visibility <scope>] [--tag <tag>] --reason <reason> [--api-url <url>] [--token <token>]
-myskills skills archive|restore|delete <skill-slug> --reason <reason> [--api-url <url>] [--token <token>]
-myskills releases list <skill-slug>
-myskills releases deprecate|unpublish|revoke|restore|delete <skill-slug>@<version> --reason <reason> [--api-url <url>] [--token <token>]
-myskills teams list|create|invite|accept|skills
-myskills sharing get|set <skill>
-myskills admin sharing get|set
-myskills token create --name <name> --scope <scope>
-myskills token list
-myskills token revoke <token-id>
-```
-
-Current CLI slice implements local `validate` and `scan` for manifest files, directories, and `.zip` packages, prompt-based `login` with API URL selection, saved API URL config, explicit `config` management, email/password session auth, API-key auth, MFA login completion, `auth status`, `logout`, API-URL-scoped durable token storage with platform keyring-first storage and file fallback, `doctor` diagnostics, server `/v1/capabilities`, structured JSON errors, clearer wrong-URL and unsupported-command errors, backend-backed `search`, `info`, `whoami`, `submit` for normalized directory text-entry package intake and server-extracted `.zip` archive intake, author submission listing/withdrawal, role-gated review list/actions, skill metadata updates, skill archive/restore/delete controls, release deprecate/unpublish/revoke/restore/delete controls, team and sharing administration commands, verified `export` of approved bundle payloads, local `install`/`list`/`update`/`rollback` with a filesystem install registry and rollback snapshots, and server API-token create/list/revoke commands. Browser/device login, platform-specific install adapters, and archive creation are still planned.
-
-Later maintainer/admin commands:
-
-```text
-myskills admin users
-myskills admin audit
-myskills admin analytics
-```
+The CLI build bundles `packages/skill-package` into `dist/index.js`. The published manifest has no runtime dependency on private `@myskills-app/*` workspaces. `npm run smoke:cli-package` verifies the exact tarball file allowlist, clean offline install, version output, and example validate/scan behavior.
 
 ## Compatibility Targets
 
-Start with a platform-neutral manifest plus one practical payload target:
+- Codex Agent Skills packages are the first supported package target.
+- Generic prompt/workflow bundles are the next target.
+- Claude, ChatGPT, and other adapters remain planned until package and review rules are stable.
 
-- Codex Agent Skills package support first.
-- Generic prompt/workflow bundle second.
-- Claude, ChatGPT, and other target adapters after package and review rules are stable.
+See [Compatibility](COMPATIBILITY.md) for supported runtimes and operating systems.
 
 ## Verification
 
-- API contract tests for every authorization path.
-- CLI smoke tests against a local API and fixture data.
-- MCP initialize, tools/list, and tools/call tests.
-- Eval fixture tests for pass, fail, warning, incompatible platform, and unsafe package cases.
-- Denied-access tests prove restricted skills are not exposed through search, info, bundle, CLI, or MCP.
+- API and Postgres contract tests cover authorization and lifecycle paths.
+- CLI unit tests cover command parsing, auth/config, artifacts, and local install state.
+- The public tarball smoke exercises the installed CLI instead of the workspace source.
+- MCP initialize, tools/list, tools/call, and HTTP guard tests cover both transports.
+- Playwright covers browser routes; Postgres integration tests cover the disposable database path.
+- `npm run release:verify` is the canonical beta candidate gate.
