@@ -1883,7 +1883,6 @@ async function readinessCheck(
       probe(),
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => reject(new Error("Readiness probe timed out.")), timeoutMs);
-        timeout.unref?.();
       }),
     ]);
     return "ready";

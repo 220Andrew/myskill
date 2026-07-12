@@ -432,7 +432,7 @@ test("role-gated deep links normalize to the public registry when access is deni
   const view = render(<RegistryApp client={client} />);
 
   await view.findByText("Release Notes Helper");
-  assert.equal(window.location.pathname, "/skills/release-notes-helper");
+  await waitFor(() => assert.equal(window.location.pathname, "/skills/release-notes-helper"));
   assert.equal(view.queryByRole("heading", { name: "Admin console" }), null);
 });
 
