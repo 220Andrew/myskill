@@ -8,7 +8,7 @@ Target release: `v0.1.0-beta.2`.
 
 - Made the documented root `.env` path automatic for local migration, seed, API, web, and MCP development commands while keeping production starts on injected environment variables.
 - Restricted supported development and CLI runtimes to Node 22/24 LTS, pinned the repo npm version in CI, added ESLint plus an explicit web typecheck gate, and isolated dependency major updates from routine Dependabot groups.
-- Removed the private skill-package runtime dependency from the public CLI manifest and added an exact tarball allowlist plus clean offline pack/install/version/validate/scan smoke.
+- Removed the private skill-package runtime dependency from the public CLI manifest and added an exact tarball allowlist plus a clean temporary pack/install/version/validate/scan smoke.
 - Strengthened prerelease coherence checks across workspace versions, API capabilities, changelog/tag/npm channel, public dependency publishability, required docs/links, and stale maturity language.
 - Added one canonical release candidate gate with tag/main ancestry verification, staging/user-test and approval boundaries, and source/npm/Railway/database/artifact rollback guidance.
 - Reconciled getting-started, compatibility, API/MCP/CLI, architecture, data model, deployment, Railway, roadmap, and beta acceptance docs around implemented, live-readback, and planned state.

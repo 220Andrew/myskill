@@ -34,7 +34,7 @@ try {
   await writeFile(join(installRoot, "package.json"), "{\n  \"private\": true\n}\n", { encoding: "utf8", flag: "wx" });
   await cp(exampleRoot, copiedExample, { recursive: true, errorOnExist: true });
 
-  run(npm, ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball], { cwd: installRoot });
+  run(npm, ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball], { cwd: installRoot });
   const executable = join(installRoot, "node_modules", ".bin", process.platform === "win32" ? "myskills.cmd" : "myskills");
   const version = run(executable, ["--version"], { capture: true }).stdout.trim();
   if (version !== cliPackage.version) {
@@ -46,7 +46,7 @@ try {
 
   console.log(`CLI package smoke passed for ${basename(tarball)}.`);
   console.log(`Tarball files: ${actualFiles.join(", ")}`);
-  console.log(`Offline install and validate/scan passed for ${cliPackage.version}.`);
+  console.log(`Clean temporary install and validate/scan passed for ${cliPackage.version}.`);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }

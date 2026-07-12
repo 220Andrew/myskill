@@ -148,7 +148,7 @@ npm run check
 TEST_DATABASE_URL=postgres://myskills_test:myskills_test@localhost:5432/myskills_test npm run test:postgres
 ```
 
-`npm run check` includes ESLint, builds, web typechecking, unit tests, prerelease policy/link/version checks, and an offline temporary install of the exact CLI tarball. `npm run test:postgres` requires `TEST_DATABASE_URL` to point at a disposable Postgres database whose name includes `test` or `ci`; it resets that database schema before applying migrations.
+`npm run check` includes ESLint, builds, web typechecking, unit tests, prerelease policy/link/version checks, and a clean temporary install of the exact CLI tarball. `npm run test:postgres` requires `TEST_DATABASE_URL` to point at a disposable Postgres database whose name includes `test` or `ci`; it resets that database schema before applying migrations.
 
 ## Support And Security
 

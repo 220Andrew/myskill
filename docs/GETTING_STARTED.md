@@ -74,7 +74,7 @@ node apps/cli/dist/index.js validate --path examples/skills/release-notes-helper
 node apps/cli/dist/index.js scan --path examples/skills/release-notes-helper
 ```
 
-The prerelease gate also packs the public CLI, checks the exact tarball allowlist, installs it in a clean temporary directory using npm's offline cache, and repeats `--version`, `validate`, and `scan` through the installed `myskills` binary.
+The prerelease gate also packs the public CLI, checks the exact tarball allowlist, installs it in a clean temporary directory with public dependencies resolved from npm, and repeats `--version`, `validate`, and `scan` through the installed `myskills` binary.
 
 ## Optional MCP Servers
 

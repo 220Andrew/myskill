@@ -60,7 +60,7 @@ The public `@jarel/myskills` bundle currently supports:
 
 [CLI App](../apps/cli/README.md) is the command-level source of truth. Browser/device login, package init/archive creation, and platform-specific install adapters are planned and should not appear as implemented commands.
 
-The CLI build bundles `packages/skill-package` into `dist/index.js`. The published manifest has no runtime dependency on private `@myskills-app/*` workspaces. `npm run smoke:cli-package` verifies the exact tarball file allowlist, clean offline install, version output, and example validate/scan behavior.
+The CLI build bundles `packages/skill-package` into `dist/index.js`. The published manifest has no runtime dependency on private `@myskills-app/*` workspaces. `npm run smoke:cli-package` verifies the exact tarball file allowlist, clean temporary install with public dependencies resolved from npm, version output, and example validate/scan behavior.
 
 ## Compatibility Targets
 

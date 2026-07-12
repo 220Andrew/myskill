@@ -84,7 +84,7 @@ The canonical gate proves:
 
 - npm's tarball metadata exactly matches the allowlist (`README.md`, `dist/index.js`, `package.json`);
 - the bundle has no private workspace runtime import;
-- a clean temporary offline install succeeds from the packed tarball;
+- a clean temporary install succeeds from the packed tarball with only public npm dependencies;
 - the installed `myskills` runs `--version`, validates the public example, and scans it.
 
 No workflow publishes npm. If the owner separately approves a manual beta publish, first inspect current dist-tags and run a dry run:

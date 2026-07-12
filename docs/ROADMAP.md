@@ -279,7 +279,7 @@ Done:
 - Production Docker targets, production Compose example, and production env preflight.
 - Public-safe example skill package.
 - Deterministic prerelease check.
-- Self-contained public CLI tarball smoke with exact file allowlist and clean offline install.
+- Self-contained public CLI tarball smoke with an exact file allowlist and clean temporary install.
 - ESLint and explicit web typecheck gates on supported Node LTS lines.
 - Tag-triggered release artifact workflow.
 - Public visibility switch.
