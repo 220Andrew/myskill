@@ -62,6 +62,14 @@ test("production Compose keeps numeric proxy trust behind the private web ingres
   );
 });
 
+test("full-stack E2E accepts MinIO credentials that begin with a hyphen", () => {
+  const compose = readFileSync(resolve("docker-compose.e2e.yml"), "utf8");
+  assert.match(
+    compose,
+    /mc alias set -- e2e http:\/\/minio:9000 "\$\$MINIO_ROOT_USER" "\$\$MINIO_ROOT_PASSWORD"/,
+  );
+});
+
 test("release artifact generation supports repeat verification with unique outputs", () => {
   const outputRoot = resolve("dist", `release-tooling-test-${randomUUID()}`);
   try {
