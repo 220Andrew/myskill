@@ -6,14 +6,14 @@ Last updated: 2026-07-13
 ## Release Tracks
 
 - **Responsible public alpha (`v0.1.0-alpha.0`)**: archived release track for the first public repository and reproducible source artifact gate.
-- **Public beta (`v0.1.0-beta.1`)**: live external trial track with owner-controlled hosted access and documented self-hosting boundaries.
-- **Beta follow-up (`v0.1.0-beta.2`)**: current candidate for local onboarding, artifact/review safety, public CLI packaging, static quality gates, release discipline, and reconciled docs. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
-- **Hosted beta**: `myskills.sh` serves the web/API application; live Railway state must be read back before claiming a candidate is deployed.
+- **Public beta (`v0.1.0-beta.1`)**: superseded external trial release that established owner-controlled hosted access and documented self-hosting boundaries.
+- **Beta follow-up (`v0.1.0-beta.2`)**: released 2026-07-13 with local onboarding, artifact/review safety, public CLI packaging, static quality gates, release discipline, and reconciled docs. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
+- **Hosted beta**: `myskills.sh` runs the beta.2 web/API release; live Railway state must still be read back before making a current deployment claim.
 - **Business-safe production release**: harden the beta into an operator-ready release with stronger audit, background scanning, skill evals, provider lifecycle, artifact delivery, trusted publishing, deploy/ops guidance, and upgrade policy. See [BUSINESS_SAFE_RELEASE_GOAL.md](BUSINESS_SAFE_RELEASE_GOAL.md).
 
 ## Current Focus
 
-- Close the beta.2 acceptance ledger with a clean canonical gate, fresh-clone local rehearsal, default-branch/tag protection readback, staging/user-test evidence, and explicit release approval.
+- Monitor beta.2 user testing, prioritize broken first-run/install paths, and convert repeated confusion into documentation or product fixes.
 - Keep production-hardening items tracked without blocking beta unless they close accepted beta risk.
 - Complete the remaining web-app MVP gaps that affect first-user clarity: private draft management, version-history polish, instance settings administration, and the broader identity-system refresh.
 - Preserve the API as the canonical registry and trust boundary for sync-related work; local and connected-tool state should reconcile through reviewable changes, not silent overwrites.
@@ -285,10 +285,7 @@ Done:
 - Public visibility switch.
 - First reproducible beta tag.
 - Release artifact verification from the public beta tag.
-
-Blocking next release:
-
-- Fresh-clone local and staging/user-test rehearsal against the immutable beta.2 candidate commit.
+- Fresh-clone local and staging/user-test rehearsal against the immutable beta.2 release commit.
 - Live GitHub branch/tag rules and security-setting readback.
 - Explicit tag, distribution, and production-deploy approvals.
 

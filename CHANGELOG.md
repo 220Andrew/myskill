@@ -4,6 +4,10 @@ All notable user-facing changes will be tracked here. MySkills is still prerelea
 
 ## Unreleased
 
+No unreleased changes.
+
+## 0.1.0-beta.2 - 2026-07-13
+
 Target release: `v0.1.0-beta.2`.
 
 - Made the documented root `.env` path automatic for local migration, seed, API, web, and MCP development commands while keeping production starts on injected environment variables.

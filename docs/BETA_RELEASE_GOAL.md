@@ -11,7 +11,13 @@ The beta remains prerelease software. It is not a business-safe production relea
 
 Target release: `v0.1.0-beta.2`.
 
+## Release Outcome
+
+Released on 2026-07-13 from commit `b69dd5e73bb59cc569456b07d0f263b4037150aa`. The protected tag workflow passed, the checksum-bearing GitHub prerelease is public, npm's `beta` dist-tag points to `@jarel/myskills@0.1.0-beta.2`, and Railway production API/web deployments run the same release commit. Production promotion used a locked pre-release Postgres volume backup and API-ready-then-web order.
+
 ## Status Language
+
+These terms describe the pre-release gate and are retained to explain how the acceptance ledger was closed.
 
 - **Implemented**: the source, script, test, or document exists in this candidate branch; it is not a claim that default-branch or live proof is current.
 - **Candidate proof required**: the final clean commit must produce fresh passing evidence.
@@ -32,18 +38,18 @@ The command intentionally fails when the worktree is dirty during final artifact
 
 ## Acceptance Ledger
 
-| Acceptance area | Required evidence | Candidate state |
+| Acceptance area | Required evidence | Release evidence |
 | --- | --- | --- |
-| Version and release contract | Root/workspace versions, API capability source, changelog target, beta goal, tag expectation, npm prerelease channel, and public dependency publishability agree | Implemented; fresh gate proof required |
-| Local onboarding | Fresh clone follows [Getting Started](GETTING_STARTED.md); root `.env` powers migrate, seed, API, web, and MCP dev scripts without shell sourcing | Implemented; fresh-clone API/web smoke required |
-| Public CLI package | Tarball contains only `README.md`, `dist/index.js`, and npm-generated `package.json`; clean temporary install runs `--version`, example `validate`, and example `scan`; no private runtime workspace dependency | Implemented in `check:prerelease`; fresh gate proof required |
-| Static quality | ESLint 10 flat config, TypeScript builds, and explicit web typecheck pass on supported Node 22 and 24 LTS CI jobs | Implemented; default-branch CI readback required |
-| Browser and database | Route-mocked Playwright, production-like full-stack Playwright through the nginx/API proxy, and disposable Postgres integration pass on the candidate commit | Candidate proof required |
-| Public docs | README, setup, compatibility, API/MCP/CLI, architecture, data model, deployment, Railway, release, roadmap, support, security, contribution, and upgrade docs distinguish implemented/live/planned | Implemented; link/prerelease check required |
-| GitHub controls | Required checks protect `main`; tag rules restrict creation/update/deletion; secret scanning, push protection, dependency security updates, and private vulnerability reporting are enabled where available | Live GitHub readback required |
-| Distribution artifacts | Verification-only tag workflow confirms tag/version/main ancestry, reruns the canonical gate, builds production Compose API/web/MCP HTTP targets plus the exact Railway API/web Dockerfiles, and uploads source/checksum metadata without publishing | Implemented; tag-run proof required |
-| Staging and user test | Same immutable commit is exercised through local production Compose or a dedicated staging environment; first-run, login/MFA, owner invitation and invitee registration, browse/detail, submit/review/publish, CLI validate/scan/search/export/install, MCP reads, and rollback notes are recorded | Candidate proof and maintainer acceptance required |
-| External release actions | Tag push, npm beta publish, GitHub Release creation, container push, and Railway production deploy are separately approved; none is implied by a green local gate | Explicit owner approval required |
+| Version and release contract | Root/workspace versions, API capability source, changelog target, beta goal, tag expectation, npm prerelease channel, and public dependency publishability agree | Passed on protected tag `v0.1.0-beta.2` |
+| Local onboarding | Fresh clone follows [Getting Started](GETTING_STARTED.md); root `.env` powers migrate, seed, API, web, and MCP dev scripts without shell sourcing | Passed in a clean Node 22 clone and the production-like full-stack gate |
+| Public CLI package | Tarball contains only `README.md`, `dist/index.js`, and npm-generated `package.json`; clean temporary install runs `--version`, example `validate`, and example `scan`; no private runtime workspace dependency | Published as `@jarel/myskills@0.1.0-beta.2`; clean Node 24 registry install smoke passed |
+| Static quality | ESLint 10 flat config, TypeScript builds, and explicit web typecheck pass on supported Node 22 and 24 LTS CI jobs | Passed on candidate, merged `main`, and tag workflow |
+| Browser and database | Route-mocked Playwright, production-like full-stack Playwright through the nginx/API proxy, and disposable Postgres integration pass on the candidate commit | Passed on exact release commit; three production migrations applied successfully |
+| Public docs | README, setup, compatibility, API/MCP/CLI, architecture, data model, deployment, Railway, release, roadmap, support, security, contribution, and upgrade docs distinguish implemented/live/planned | Link/prerelease checks passed; live release status reconciled after promotion |
+| GitHub controls | Required checks protect `main`; tag rules restrict creation/update/deletion; secret scanning, push protection, dependency security updates, and private vulnerability reporting are enabled where available | Live readback passed with administrator enforcement and high-or-higher CodeQL blocking |
+| Distribution artifacts | Verification-only tag workflow confirms tag/version/main ancestry, reruns the canonical gate, builds production Compose API/web/MCP HTTP targets plus the exact Railway API/web Dockerfiles, and uploads source/checksum metadata without publishing | Tag workflow passed; GitHub prerelease exposes verified source, metadata, and checksums |
+| Staging and user test | Same immutable commit is exercised through local production Compose or a dedicated staging environment; first-run, login/MFA, owner invitation and invitee registration, browse/detail, submit/review/publish, CLI validate/scan/search/export/install, MCP reads, and rollback notes are recorded | Passed against the immutable release commit in isolated staging; production public/browser/CLI smoke passed |
+| External release actions | Tag push, npm beta publish, GitHub Release creation, container push, and Railway production deploy are separately approved; none is implied by a green local gate | Owner approved tag, npm/GitHub publication, and Railway promotion; container registry publication remains intentionally deferred |
 
 ## Known Beta Limitations
 
