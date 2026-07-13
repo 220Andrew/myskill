@@ -3,7 +3,7 @@
 Version: 0.1.0-beta.2
 Last updated: 2026-07-13
 
-This is the maintained deployment runbook for the owner-controlled public beta at `myskills.sh`. Live Railway readback on 2026-07-13 showed beta.1 commit `6120a95`: re-check deployment IDs and commit IDs before making a current-state claim.
+This is the maintained deployment runbook for the owner-controlled public beta at `myskills.sh`. Live Railway readback on 2026-07-13 showed beta.2 commit `b69dd5e`: API deployment `ef995431-ae75-461b-b05c-b1a486cc03c9` and web deployment `97ae81a3-dcf9-42b1-b120-9b62d2cd9b79`. Re-check deployment IDs and commit IDs before making a current-state claim.
 
 ## Railway Project
 
@@ -25,15 +25,16 @@ The optional HTTP MCP service is not part of the maintained live beta service se
 
 `Dockerfile.api` and `Dockerfile.web` are the current Railway image sources. CI and release verification build those exact files in addition to the root multi-target `Dockerfile` used by the production Compose example. All three build app workspaces with Node 22 LTS; production starts use injected variables and do not copy the local `.env` into images.
 
-## Live Gaps Requiring Promotion Approval
+## Live Production Readback
 
 As of the 2026-07-13 readback:
 
-- Railway service `healthcheckPath` is unset. Configure the API service to use `/ready` (not shallow `/health`) before relying on platform health-gated promotion; configure the web service healthcheck deliberately as well.
-- The live API did not have `TRUST_PROXY` set. The production preflight now rejects an omitted value. Before promotion, set a bounded hop count/address list that matches the actual Railway proxy path, or explicitly set `false` only when forwarded client IPs are intentionally ignored. Do not guess and do not use broad `true`.
-- Production remains beta.1 until Railway readback proves API and web are running the same approved beta.2 commit.
+- The API service uses `/ready` with a 300-second deployment timeout; the web service uses `/health` with the same timeout.
+- The API uses bounded `TRUST_PROXY=1`, matching the documented single Railway/nginx proxy hop; the production environment preflight passes.
+- API and web run the same approved beta.2 release commit and report successful deployment status.
+- A locked manual Postgres volume backup named `pre-v0.1.0-beta.2-2026-07-13` is the database rollback point for this promotion.
 
-These are documented release blockers/gaps, not changes applied to Railway by this repository pass.
+The previous beta.1 API deployment `accf248a-6a1d-432d-b3cd-710430fb9c75` and web deployment `ba82d0c3-629b-480e-b436-fa4054b0866e` remain redeployable application rollback targets. Database migrations are forward-only unless the explicit backup-restore path and accepted data-loss boundary are approved.
 
 ## Domains
 

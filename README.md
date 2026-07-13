@@ -18,9 +18,11 @@ MySkills is an open-source beta platform for publishing, reviewing, discovering,
 
 Current target: **v0.1.0-beta.2**.
 
+Released on 2026-07-13: [GitHub prerelease](https://github.com/jremick/myskills/releases/tag/v0.1.0-beta.2), [`@jarel/myskills@beta`](https://www.npmjs.com/package/@jarel/myskills/v/0.1.0-beta.2), and the hosted beta at [myskills.sh](https://myskills.sh).
+
 This beta is intended for real external trial use with documented compatibility, support, and upgrade expectations. It is still prerelease software and not yet the business-safe production release: API contracts, package formats, deployment defaults, and operational guidance may still change before `v1.0`.
 
-The beta acceptance ledger is tracked in [docs/BETA_RELEASE_GOAL.md](docs/BETA_RELEASE_GOAL.md); the one executable candidate gate is `npm run release:verify`.
+The closed beta acceptance ledger is tracked in [docs/BETA_RELEASE_GOAL.md](docs/BETA_RELEASE_GOAL.md); the one executable candidate gate is `npm run release:verify`.
 
 ## Name
 
@@ -122,10 +124,10 @@ node apps/cli/dist/index.js token create --name "Local CLI" --scope profile:read
 node apps/cli/dist/index.js logout
 ```
 
-The currently published CLI package remains available through npm under the alpha dist-tag. The `0.1.0-beta.2` source candidate is configured for the beta dist-tag, but this repository does not publish it automatically:
+The `0.1.0-beta.2` CLI is published under npm's `beta` dist-tag. The `latest` and `alpha` tags remain on `0.1.0-alpha.3`, so prerelease users must select the beta channel explicitly:
 
 ```bash
-npm install -g @jarel/myskills@alpha
+npm install -g @jarel/myskills@beta
 myskills --version
 ```
 
