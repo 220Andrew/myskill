@@ -280,6 +280,19 @@ function checkWorkflowContracts() {
     failures.push("Release verification workflow must not publish npm packages, GitHub Releases, or container images.");
   }
 
+  const installDeclaredNpm = `npm install -g "$(node -p 'require("./package.json").packageManager')"`;
+  for (const [path, workflow] of [
+    [".github/workflows/ci.yml", ci],
+    [".github/workflows/release.yml", release],
+  ]) {
+    if (!workflow.includes(installDeclaredNpm)) {
+      failures.push(`${path} must install the declared npm version without passing escaped quotes to node -p.`);
+    }
+    if (workflow.includes(String.raw`require(\"./package.json\")`)) {
+      failures.push(`${path} must not escape package.json quotes inside the shell's single-quoted node -p expression.`);
+    }
+  }
+
   for (const [path, workflow] of [
     [".github/workflows/ci.yml", ci],
     [".github/workflows/release.yml", release],

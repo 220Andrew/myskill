@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
+      - run: npm install -g "$(node -p 'require("./package.json").packageManager')"
       - run: npm ci
       - run: npm run check
 
@@ -54,7 +54,7 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
+      - run: npm install -g "$(node -p 'require("./package.json").packageManager')"
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e -w @myskills-app/web
@@ -93,7 +93,7 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-      - run: npm install -g "$(node -p 'require(\"./package.json\").packageManager')"
+      - run: npm install -g "$(node -p 'require("./package.json").packageManager')"
       - run: npm ci
       - run: npm run test:postgres
         env:

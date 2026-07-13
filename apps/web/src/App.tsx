@@ -1033,10 +1033,8 @@ function InvitationRegistrationPage({
   const [linkInvalid, setLinkInvalid] = useState(!token);
 
   useEffect(() => {
-    if (token) {
-      clearAuthActionTokenFromLocation();
-    }
-  }, [token]);
+    clearAuthActionTokenFromLocation();
+  }, []);
 
   async function register() {
     setMessage(null);
