@@ -1,6 +1,6 @@
 {
   "name": "@jarel/myskills",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Command-line client for publishing, discovering, installing, updating, and rolling back MySkills packages.",
   "license": "Apache-2.0",
   "private": false,
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13 <23 || >=24 <25"
   },
   "repository": {
     "type": "git",
@@ -33,7 +33,7 @@
   ],
   "publishConfig": {
     "access": "public",
-    "tag": "alpha",
+    "tag": "beta",
     "provenance": true
   },
   "scripts": {
@@ -41,7 +41,7 @@
     "test": "node ../../scripts/run-node-tests.mjs --import tsx --extensions .test.ts"
   },
   "devDependencies": {
-    "@myskills-app/skill-package": "0.1.0-beta.1",
+    "@myskills-app/skill-package": "0.1.0-beta.2",
     "esbuild": "^0.28.1",
     "tsx": "^4.20.6"
   },

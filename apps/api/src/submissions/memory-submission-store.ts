@@ -12,6 +12,7 @@ import type {
   ReleaseLifecycleAction,
   ReviewActionResult,
   ReviewSubmissionSummary,
+  ReviewSubmissionBundle,
   SkillLifecycleAction,
   SkillManagementSummary,
   SkillMetadataUpdate,
@@ -23,6 +24,7 @@ import type {
   UserSubmissionBundle,
   UserSubmissionSummary,
 } from "./types.js";
+import { artifactPayloadSha256 } from "./artifact-hash.js";
 
 interface AuditRecord {
   action: string;
@@ -62,6 +64,7 @@ export class MemorySubmissionStore implements SubmissionStore {
       })),
       reviewStatus: "unreviewed",
       securityStatus: input.securityStatus,
+      approvedArtifactSha256: null,
       publishedAt: null,
       createdAt: new Date().toISOString(),
       artifact: input.artifact,
@@ -71,9 +74,10 @@ export class MemorySubmissionStore implements SubmissionStore {
       },
     };
     this.submissions.set(key, submission);
-    if (!this.skillLifecycle.has(submission.skillSlug)) {
-      this.skillLifecycle.set(submission.skillSlug, "submitted");
-    }
+    this.skillLifecycle.set(
+      submission.skillSlug,
+      this.skillLifecycle.get(submission.skillSlug) === "approved" ? "approved" : "submitted",
+    );
     return submission;
   }
 
@@ -135,27 +139,33 @@ export class MemorySubmissionStore implements SubmissionStore {
 
   async listReviewSubmissions(): Promise<ReviewSubmissionSummary[]> {
     return [...this.submissions.values()]
-      .filter((submission) => (
-        ["unreviewed", "changes-requested"].includes(submission.reviewStatus) ||
-        (submission.reviewStatus === "approved" && !submission.publishedAt)
-      ))
-      .map((submission) => ({
-        id: submission.id,
-        slug: submission.skillSlug,
-        title: submission.title,
-        version: submission.version,
-        visibility: submission.visibility,
-        lifecycleStatus: submission.lifecycleStatus,
-        reviewStatus: submission.reviewStatus,
-        securityStatus: submission.securityStatus,
-        platforms: submission.platforms,
-        findingCount: submission.scan.findings.length,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        allowedActions: reviewAllowedActions(submission),
-      }));
+      .filter((submission) => isReviewQueueSubmission(submission, this.skillLifecycle.get(submission.skillSlug)))
+      .map((submission) => reviewSubmissionSummary(submission, this.skillLifecycle.get(submission.skillSlug)));
   }
 
-  async approveSubmission(input: { actorId: string; submissionId: string; reason?: string }): Promise<ReviewActionResult> {
+  async getReviewSubmissionBundle(input: { submissionId: string; platform?: string }): Promise<ReviewSubmissionBundle | null> {
+    const submission = this.findSubmission(input.submissionId);
+    if (!submission || !isReviewQueueSubmission(submission, this.skillLifecycle.get(submission.skillSlug))) {
+      return null;
+    }
+    if (input.platform && !submission.platforms.some((platform) => (
+      platform.name === input.platform &&
+      platform.status === "supported"
+    ))) {
+      return null;
+    }
+    return {
+      ...reviewSubmissionSummary(submission, this.skillLifecycle.get(submission.skillSlug)),
+      artifact: {
+        sha256: artifactPayloadSha256(submission.artifact.payload),
+        byteSize: Buffer.byteLength(JSON.stringify(submission.artifact.payload)),
+        contentType: submission.artifact.contentType,
+      },
+      payload: submission.artifact.payload,
+    };
+  }
+
+  async approveSubmission(input: { actorId: string; submissionId: string; artifactSha256: string; reason?: string }): Promise<ReviewActionResult> {
     const submission = this.findSubmission(input.submissionId);
     if (!submission) {
       this.recordAudit("review.approve", "deny", input.actorId, {
@@ -182,12 +192,33 @@ export class MemorySubmissionStore implements SubmissionStore {
       });
       throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
     }
+    if (!isActiveReviewSubmission(submission, this.skillLifecycle.get(submission.skillSlug))) {
+      this.recordAudit("review.approve", "deny", input.actorId, {
+        submissionId: submission.id,
+        slug: submission.skillSlug,
+        version: submission.version,
+        reason: "not_reviewable",
+      });
+      throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
+    }
+    const currentArtifactSha256 = artifactPayloadSha256(submission.artifact.payload);
+    if (input.artifactSha256 !== currentArtifactSha256) {
+      this.recordAudit("review.approve", "deny", input.actorId, {
+        submissionId: submission.id,
+        slug: submission.skillSlug,
+        version: submission.version,
+        reason: "artifact_hash_mismatch",
+      });
+      throw new AppError("Approval artifact hash does not match the current submission artifact.", "ARTIFACT_HASH_MISMATCH", 409);
+    }
     submission.reviewStatus = "approved";
     submission.lifecycleStatus = "review";
+    submission.approvedArtifactSha256 = input.artifactSha256;
     this.recordAudit("review.approve", "allow", input.actorId, {
       submissionId: submission.id,
       slug: submission.skillSlug,
       version: submission.version,
+      artifactSha256: input.artifactSha256,
       reason: input.reason,
     });
     return reviewActionResult(submission);
@@ -202,7 +233,7 @@ export class MemorySubmissionStore implements SubmissionStore {
       });
       throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
     }
-    if (!["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
+    if (!isActiveReviewSubmission(submission, this.skillLifecycle.get(submission.skillSlug)) || !["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
       this.recordAudit("review.request_changes", "deny", input.actorId, {
         submissionId: submission.id,
         slug: submission.skillSlug,
@@ -231,7 +262,7 @@ export class MemorySubmissionStore implements SubmissionStore {
       });
       throw new AppError("Submission not found.", "SUBMISSION_NOT_FOUND", 404);
     }
-    if (!["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
+    if (!isActiveReviewSubmission(submission, this.skillLifecycle.get(submission.skillSlug)) || !["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
       this.recordAudit("review.reject", "deny", input.actorId, {
         submissionId: submission.id,
         slug: submission.skillSlug,
@@ -286,6 +317,34 @@ export class MemorySubmissionStore implements SubmissionStore {
         reason: "already_published",
       });
       throw new AppError("Submission is already published.", "SUBMISSION_ALREADY_PUBLISHED", 409);
+    }
+    if (!isActiveReviewSubmission(submission, this.skillLifecycle.get(submission.skillSlug))) {
+      this.recordAudit("release.publish", "deny", input.actorId, {
+        submissionId: submission.id,
+        slug: submission.skillSlug,
+        version: submission.version,
+        reason: "not_reviewable",
+      });
+      throw new AppError("Submission is not reviewable.", "SUBMISSION_NOT_REVIEWABLE", 409);
+    }
+    const currentArtifactSha256 = artifactPayloadSha256(submission.artifact.payload);
+    if (!submission.approvedArtifactSha256) {
+      this.recordAudit("release.publish", "deny", input.actorId, {
+        submissionId: submission.id,
+        slug: submission.skillSlug,
+        version: submission.version,
+        reason: "missing_approved_artifact_hash",
+      });
+      throw new AppError("Submission approval must include an artifact hash before publication.", "APPROVED_ARTIFACT_HASH_REQUIRED", 409);
+    }
+    if (submission.approvedArtifactSha256 !== currentArtifactSha256) {
+      this.recordAudit("release.publish", "deny", input.actorId, {
+        submissionId: submission.id,
+        slug: submission.skillSlug,
+        version: submission.version,
+        reason: "approved_artifact_hash_mismatch",
+      });
+      throw new AppError("Approved artifact hash does not match the current submission artifact.", "APPROVED_ARTIFACT_HASH_MISMATCH", 409);
     }
     try {
       assertArtifactManifestMatchesSubmission(submission);
@@ -378,7 +437,7 @@ export class MemorySubmissionStore implements SubmissionStore {
     return submissions
       .filter((submission) => canManage || isPubliclyVisibleRelease(submission, skillLifecycle))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .map(releaseSummary);
+      .map((submission) => releaseSummary(submission, input.actor ?? null));
   }
 
   async performReleaseAction(input: { slug: string; version: string; actor: SubmissionActor; action: ReleaseLifecycleAction; reason?: string; replacement?: string }): Promise<SkillReleaseSummary> {
@@ -387,6 +446,24 @@ export class MemorySubmissionStore implements SubmissionStore {
       throw new AppError("Release not found.", "RELEASE_NOT_FOUND", 404);
     }
     assertCanManageSkill(submission, input.actor);
+    if (input.action === "restore" && submission.lifecycleStatus === "revoked") {
+      if (!isPrivilegedReleaseActor(input.actor)) {
+        this.recordAudit("release.restore", "deny", input.actor.id, {
+          slug: input.slug,
+          version: input.version,
+          reason: "privileged_restore_required",
+        });
+        throw new AppError("Restoring a revoked release requires maintainer permissions.", "RELEASE_RESTORE_ROLE_REQUIRED", 403);
+      }
+      if (!isSafeRevokedRestore(submission)) {
+        this.recordAudit("release.restore", "deny", input.actor.id, {
+          slug: input.slug,
+          version: input.version,
+          reason: "unsafe_release_state",
+        });
+        throw new AppError("Revoked release artifact and scan state must be safe before restore.", "RELEASE_RESTORE_UNSAFE", 409);
+      }
+    }
     const allowed = releaseAllowedActions(submission);
     if (!allowed.includes(input.action)) {
       this.recordAudit(`release.${input.action}`, "deny", input.actor.id, {
@@ -540,7 +617,8 @@ function restoredSkillLifecycle(submissions: StoredSubmission[]): SkillLifecycle
   return "archived";
 }
 
-function releaseSummary(submission: StoredSubmission): SkillReleaseSummary {
+function releaseSummary(submission: StoredSubmission, actor: SubmissionActor | null = null): SkillReleaseSummary {
+  const allowedActions = releaseAllowedActions(submission);
   return {
     id: submission.id,
     slug: submission.skillSlug,
@@ -551,13 +629,49 @@ function releaseSummary(submission: StoredSubmission): SkillReleaseSummary {
     publishedAt: submission.publishedAt,
     platforms: submission.platforms,
     findingCount: submission.scan.findings.length,
-    allowedActions: releaseAllowedActions(submission),
+    allowedActions: submission.lifecycleStatus === "revoked" && !isPrivilegedReleaseActor(actor)
+      ? allowedActions.filter((action) => action !== "restore")
+      : allowedActions,
   };
 }
 
-function reviewAllowedActions(submission: StoredSubmission): ReviewSubmissionSummary["allowedActions"] {
+function isPrivilegedReleaseActor(actor: SubmissionActor | null): boolean {
+  return Boolean(actor?.roles.some((role) => role === "owner" || role === "admin" || role === "maintainer"));
+}
+
+function isSafeRevokedRestore(submission: StoredSubmission): boolean {
+  return submission.reviewStatus === "approved" &&
+    submission.securityStatus === "passed" &&
+    submission.scan.status === "succeeded" &&
+    Boolean(submission.publishedAt) &&
+    Boolean(submission.approvedArtifactSha256) &&
+    submission.approvedArtifactSha256 === submission.artifact.sha256;
+}
+
+function reviewSubmissionSummary(submission: StoredSubmission, skillLifecycle?: SkillLifecycleStatus): ReviewSubmissionSummary {
+  return {
+    id: submission.id,
+    slug: submission.skillSlug,
+    title: submission.title,
+    version: submission.version,
+    visibility: submission.visibility,
+    lifecycleStatus: submission.lifecycleStatus,
+    reviewStatus: submission.reviewStatus,
+    securityStatus: submission.securityStatus,
+    approvedArtifactSha256: submission.approvedArtifactSha256,
+    platforms: submission.platforms,
+    findingCount: submission.scan.findings.length,
+    createdAt: submission.createdAt,
+    allowedActions: reviewAllowedActions(submission, skillLifecycle),
+  };
+}
+
+function reviewAllowedActions(submission: StoredSubmission, skillLifecycle?: SkillLifecycleStatus): ReviewSubmissionSummary["allowedActions"] {
+  if (!isActiveReviewSubmission(submission, skillLifecycle)) {
+    return [];
+  }
   if (submission.reviewStatus === "approved" && !submission.publishedAt && submission.securityStatus === "passed") {
-    return ["publish"];
+    return submission.approvedArtifactSha256 ? ["publish"] : [];
   }
   if (["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
     return submission.securityStatus === "passed"
@@ -565,6 +679,18 @@ function reviewAllowedActions(submission: StoredSubmission): ReviewSubmissionSum
       : ["request-changes", "reject"];
   }
   return [];
+}
+
+function isReviewQueueSubmission(submission: StoredSubmission, skillLifecycle?: SkillLifecycleStatus): boolean {
+  if (!isActiveReviewSubmission(submission, skillLifecycle)) {
+    return false;
+  }
+  return ["unreviewed", "changes-requested"].includes(submission.reviewStatus) ||
+    (submission.reviewStatus === "approved" && !submission.publishedAt);
+}
+
+function isActiveReviewSubmission(submission: StoredSubmission, skillLifecycle?: SkillLifecycleStatus): boolean {
+  return submission.lifecycleStatus !== "archived" && skillLifecycle !== "archived";
 }
 
 function submissionAllowedActions(submission: StoredSubmission): UserSubmissionSummary["allowedActions"] {
@@ -628,6 +754,7 @@ function reviewActionResult(submission: StoredSubmission): ReviewActionResult {
     lifecycleStatus: submission.lifecycleStatus,
     reviewStatus: submission.reviewStatus,
     securityStatus: submission.securityStatus,
+    approvedArtifactSha256: submission.approvedArtifactSha256,
     publishedAt: submission.publishedAt,
   };
 }

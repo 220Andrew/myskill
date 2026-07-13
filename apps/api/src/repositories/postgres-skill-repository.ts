@@ -238,6 +238,23 @@ export class PostgresSkillRepository implements SkillRepository {
             '{}'::text[]
           )
         `,
+        hasTeamAccess: actorId && sharing.teamsEnabled && sharing.teamVisibilityEnabled
+          ? sql<boolean>`exists (
+              select 1
+              from ${skillTeamGrants}
+              inner join ${teamMemberships} on ${teamMemberships.teamId} = ${skillTeamGrants.teamId}
+              where ${skillTeamGrants.skillId} = ${skills.id}
+                and ${teamMemberships.userId} = ${actorId}
+            )`
+          : sql<boolean>`false`,
+        hasUserGrant: actorId && sharing.userVisibilityEnabled
+          ? sql<boolean>`exists (
+              select 1
+              from ${skillUserGrants}
+              where ${skillUserGrants.skillId} = ${skills.id}
+                and ${skillUserGrants.userId} = ${actorId}
+            )`
+          : sql<boolean>`false`,
       })
       .from(skills)
       .innerJoin(skillVersions, eq(skillVersions.skillId, skills.id))
@@ -261,7 +278,7 @@ export class PostgresSkillRepository implements SkillRepository {
       .orderBy(sql`${skillVersions.createdAt} desc`, skills.title)
       .limit(limit);
 
-    return Promise.all(rows.map(async (row) => ({
+    return rows.map((row) => ({
       slug: row.slug,
       title: row.title,
       summary: row.summary,
@@ -275,10 +292,10 @@ export class PostgresSkillRepository implements SkillRepository {
       access: actorId
         ? {
           canManageSharing: row.ownerUserId === actorId,
-          reasons: await this.accessReasonsForSkill(row, actorId, sharing),
+          reasons: this.accessReasonsForSkill(row, actorId, sharing),
         }
         : undefined,
-    })));
+    }));
   }
 
   private async findSkillForSharing(slug: string) {
@@ -385,11 +402,16 @@ export class PostgresSkillRepository implements SkillRepository {
     return rows.map((row) => row.id);
   }
 
-  private async accessReasonsForSkill(
-    row: { id: string; visibility: VisibilityScope; ownerUserId: string | null },
+  private accessReasonsForSkill(
+    row: {
+      visibility: VisibilityScope;
+      ownerUserId: string | null;
+      hasTeamAccess: boolean;
+      hasUserGrant: boolean;
+    },
     actorId: string,
     sharing: SharingSettings,
-  ): Promise<SkillAccessReason[]> {
+  ): SkillAccessReason[] {
     const reasons: SkillAccessReason[] = [];
     if (row.ownerUserId === actorId) {
       reasons.push("owner");
@@ -400,32 +422,13 @@ export class PostgresSkillRepository implements SkillRepository {
     if ((row.visibility === "authenticated" || row.visibility === "organization") && sharing.authenticatedVisibilityEnabled) {
       reasons.push("authenticated");
     }
-    if (row.visibility === "team" && sharing.teamsEnabled && sharing.teamVisibilityEnabled && await this.hasTeamAccess(row.id, actorId)) {
+    if (row.visibility === "team" && sharing.teamsEnabled && sharing.teamVisibilityEnabled && row.hasTeamAccess) {
       reasons.push("team");
     }
-    if (row.visibility === "explicit-users" && sharing.userVisibilityEnabled && await this.hasUserGrant(row.id, actorId)) {
+    if (row.visibility === "explicit-users" && sharing.userVisibilityEnabled && row.hasUserGrant) {
       reasons.push("explicit-user");
     }
     return reasons;
-  }
-
-  private async hasTeamAccess(skillId: string, actorId: string): Promise<boolean> {
-    const [row] = await this.db
-      .select({ teamId: skillTeamGrants.teamId })
-      .from(skillTeamGrants)
-      .innerJoin(teamMemberships, eq(teamMemberships.teamId, skillTeamGrants.teamId))
-      .where(and(eq(skillTeamGrants.skillId, skillId), eq(teamMemberships.userId, actorId)))
-      .limit(1);
-    return Boolean(row);
-  }
-
-  private async hasUserGrant(skillId: string, actorId: string): Promise<boolean> {
-    const [row] = await this.db
-      .select({ userId: skillUserGrants.userId })
-      .from(skillUserGrants)
-      .where(and(eq(skillUserGrants.skillId, skillId), eq(skillUserGrants.userId, actorId)))
-      .limit(1);
-    return Boolean(row);
   }
 }
 

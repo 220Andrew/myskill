@@ -34,3 +34,50 @@ test("PostgresAuthRateLimiter allows attempts within the shared bucket limit", a
     { allowed: true, retryAfterSeconds: 0 },
   );
 });
+
+test("PostgresAuthRateLimiter periodically deletes expired buckets in bounded batches", async () => {
+  const queries: string[] = [];
+  const pool: QueryablePool = {
+    async query(query) {
+      queries.push(query);
+      if (query.includes("RETURNING attempt_count")) {
+        return { rows: [{ attempt_count: 1, reset_at: new Date("2026-06-14T10:15:00Z") }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const limiter = new PostgresAuthRateLimiter(pool, {
+    maxAttempts: 10,
+    windowMs: 60_000,
+    cleanupEvery: 2,
+    cleanupBatchSize: 25,
+  });
+
+  await limiter.consume("api:ip:203.0.113.1", new Date("2026-06-14T10:00:00Z"));
+  await limiter.consume("api:ip:203.0.113.2", new Date("2026-06-14T10:00:01Z"));
+
+  assert.equal(queries.length, 3);
+  assert.match(queries[2], /DELETE FROM auth_rate_limits/);
+  assert.match(queries[2], /LIMIT \$2/);
+});
+
+test("PostgresAuthRateLimiter does not fail requests when best-effort cleanup fails", async () => {
+  const pool: QueryablePool = {
+    async query(query) {
+      if (query.includes("DELETE FROM auth_rate_limits")) {
+        throw new Error("cleanup unavailable");
+      }
+      return { rows: [{ attempt_count: 1, reset_at: new Date("2026-06-14T10:15:00Z") }] };
+    },
+  };
+  const limiter = new PostgresAuthRateLimiter(pool, {
+    maxAttempts: 10,
+    windowMs: 60_000,
+    cleanupEvery: 1,
+  });
+
+  assert.deepEqual(
+    await limiter.consume("api:ip:203.0.113.3", new Date("2026-06-14T10:00:00Z")),
+    { allowed: true, retryAfterSeconds: 0 },
+  );
+});

@@ -350,12 +350,63 @@ test("review submissions prints stable rows", async () => {
   assert.deepEqual(output.stdout, ["submission-1\trelease-notes-helper@0.1.0\tunreviewed\tpassed\tfindings=0"]);
 });
 
+test("review bundle prints the artifact hash and can write the payload", async () => {
+  const output = createOutput();
+  const tempDir = await makeTempPackage();
+  const outputPath = path.join(tempDir, "review-bundle.json");
+  const payloadText = JSON.stringify({ files: [{ path: "skill.json", content: "{}" }] });
+  const artifactSha256 = createHash("sha256").update(payloadText).digest("hex");
+  let url = "";
+  let authorization = "";
+  const fetch: FetchLike = async (input, init) => {
+    url = String(input);
+    authorization = init?.headers?.authorization ?? "";
+    return rawResponse(200, payloadText, {
+      "x-myskills-artifact-sha256": artifactSha256,
+    });
+  };
+
+  const code = await runCli([
+    "review",
+    "bundle",
+    "submission-1",
+    "--platform",
+    "codex",
+    "--output",
+    outputPath,
+    "--api-url",
+    "http://api.test",
+  ], testRuntime(output, fetch, { MYSKILLS_TOKEN: "review-token" }));
+
+  assert.equal(code, 0);
+  assert.equal(url, "http://api.test/v1/review/submissions/submission-1/bundle?platform=codex");
+  assert.equal(authorization, "Bearer review-token");
+  assert.deepEqual(output.stdout, [`artifactSha256=${artifactSha256}\toutput=${path.resolve(outputPath)}`]);
+  const writtenText = await readFile(outputPath, "utf8");
+  assert.equal(createHash("sha256").update(writtenText).digest("hex"), artifactSha256);
+  assert.deepEqual(JSON.parse(writtenText), { files: [{ path: "skill.json", content: "{}" }] });
+});
+
+test("review bundle fails closed when the artifact hash header is missing", async () => {
+  const output = createOutput();
+
+  const code = await runCli([
+    "review",
+    "bundle",
+    "submission-1",
+  ], testRuntime(output, async () => rawResponse(200, JSON.stringify({ files: [] })), { MYSKILLS_TOKEN: "review-token" }));
+
+  assert.equal(code, 1);
+  assert.match(output.stderr.join("\n"), /missing artifact hash/);
+});
+
 test("review action posts exact action payload", async () => {
   const output = createOutput();
   let url = "";
   let method = "";
   let authorization = "";
   let body: Record<string, unknown> = {};
+  const artifactSha256 = "a".repeat(64);
   const fetch: FetchLike = async (input, init) => {
     url = String(input);
     method = init?.method ?? "GET";
@@ -378,6 +429,8 @@ test("review action posts exact action payload", async () => {
     "submission-1",
     "--action",
     "approve",
+    "--artifact-sha256",
+    artifactSha256,
     "--reason",
     "checked",
     "--api-url",
@@ -388,8 +441,65 @@ test("review action posts exact action payload", async () => {
   assert.equal(url, "http://api.test/v1/review/submissions/submission-1/actions");
   assert.equal(method, "POST");
   assert.equal(authorization, "Bearer review-token");
-  assert.deepEqual(body, { action: "approve", reason: "checked" });
+  assert.deepEqual(body, { action: "approve", artifactSha256, reason: "checked" });
   assert.deepEqual(output.stdout, ["release-notes-helper@0.1.0\tapproved\tpassed\tpublished=-"]);
+});
+
+test("review approve requires a lowercase artifact hash before fetch", async () => {
+  const cases = [
+    ["missing", []],
+    ["malformed", ["--artifact-sha256", "abc"]],
+  ];
+  for (const [label, args] of cases) {
+    const output = createOutput();
+    let calls = 0;
+
+    const code = await runCli([
+      "review",
+      "action",
+      "submission-1",
+      "--action",
+      "approve",
+      ...(args as string[]),
+    ], testRuntime(output, async () => {
+      calls += 1;
+      return response(500, {});
+    }, { MYSKILLS_TOKEN: "review-token" }));
+
+    assert.equal(code, 2, label);
+    assert.equal(calls, 0, label);
+    assert.match(output.stderr.join("\n"), /--artifact-sha256 is required/);
+  }
+});
+
+test("review approve normalizes uppercase artifact hashes", async () => {
+  const output = createOutput();
+  let body: Record<string, unknown> = {};
+  const fetch: FetchLike = async (_input, init) => {
+    body = JSON.parse(init?.body ?? "{}");
+    return response(200, {
+      submission: {
+        slug: "release-notes-helper",
+        version: "0.1.0",
+        reviewStatus: "approved",
+        securityStatus: "passed",
+        publishedAt: null,
+      },
+    });
+  };
+
+  const code = await runCli([
+    "review",
+    "action",
+    "submission-1",
+    "--action",
+    "approve",
+    "--artifact-sha256",
+    "A".repeat(64),
+  ], testRuntime(output, fetch, { MYSKILLS_TOKEN: "review-token" }));
+
+  assert.equal(code, 0);
+  assert.equal(body.artifactSha256, "a".repeat(64));
 });
 
 test("review action rejects unknown actions without fetch", async () => {
@@ -1220,8 +1330,9 @@ function response(status: number, body: Record<string, unknown>, expectedInput?:
   };
 }
 
-function rawResponse(status: number, body: string) {
+function rawResponse(status: number, body: string, headers: Record<string, string> = {}) {
   return {
+    headers,
     ok: status >= 200 && status < 300,
     status,
     async text() {

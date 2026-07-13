@@ -8,10 +8,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-verification-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Verify Release
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: myskills_test
+          POSTGRES_PASSWORD: myskills_test
+          POSTGRES_USER: myskills_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U myskills_test -d myskills_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -21,25 +39,32 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22.x
           cache: npm
 
       - name: Install declared npm version
         run: npm install -g "$(node -p 'require("./package.json").packageManager')"
 
-      - name: Verify tag matches package version
+      - name: Verify tag and main ancestry
         run: |
           expected="v$(node -p 'require("./package.json").version')"
           test "$expected" = "$GITHUB_REF_NAME"
+          git fetch --no-tags origin main
+          tag_commit="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          git merge-base --is-ancestor "$tag_commit" origin/main
 
       - name: Install
         run: npm ci
 
-      - name: Check
-        run: npm run check
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
 
-      - name: Create release artifacts
-        run: npm run release:artifacts -- --require-tag --expected-tag "$GITHUB_REF_NAME"
+      - name: Run canonical release verification
+        env:
+          TEST_DATABASE_URL: postgres://myskills_test:myskills_test@localhost:5432/myskills_test
+          RELEASE_REQUIRE_TAG: "true"
+          RELEASE_EXPECTED_TAG: ${{ github.ref_name }}
+        run: npm run release:verify
 
       - name: Build API image
         run: docker build --target api -t myskills-app-api:${{ github.ref_name }} .
@@ -48,11 +73,17 @@ jobs:
         run: docker build --target mcp-http -t myskills-app-mcp-http:${{ github.ref_name }} .
 
       - name: Build web image
-        run: docker build --target web --build-arg VITE_API_BASE_URL=https://api.example.invalid -t myskills-app-web:${{ github.ref_name }} .
+        run: docker build --target web --build-arg VITE_API_BASE_URL=/api -t myskills-app-web:${{ github.ref_name }} .
+
+      - name: Build Railway API image
+        run: docker build --file Dockerfile.api --tag myskills-app-railway-api:${{ github.ref_name }} .
+
+      - name: Build Railway web image
+        run: docker build --file Dockerfile.web --build-arg VITE_API_BASE_URL=/api --tag myskills-app-railway-web:${{ github.ref_name }} .
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
           name: myskills-app-${{ github.ref_name }}
-          path: dist/release/*
+          path: dist/release-verify-*/artifacts/*
           if-no-files-found: error

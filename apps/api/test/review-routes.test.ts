@@ -46,6 +46,60 @@ test("authors cannot list or act on reviews", async (t) => {
   assert.equal(JSON.stringify(listResponse.json()).includes("Release Notes Helper"), false);
 });
 
+test("review artifact preview requires review read permissions and MFA", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const unverifiedMaintainerToken = await addAndLogin(app, authStore, "maintainer@example.com", ["maintainer"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "verified-maintainer@example.com", ["maintainer"]);
+
+  const submitResponse = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  assert.equal(submitResponse.statusCode, 202);
+  const submissionId = submitResponse.json().submission.id as string;
+
+  const unauthenticated = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+  });
+  assert.equal(unauthenticated.statusCode, 401);
+  assert.equal(unauthenticated.json().error.code, "AUTHENTICATION_REQUIRED");
+
+  const authorPreview = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${authorToken}` },
+  });
+  assert.equal(authorPreview.statusCode, 403);
+  assert.equal(authorPreview.json().error.code, "REVIEW_ROLE_REQUIRED");
+
+  const mfaRequired = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${unverifiedMaintainerToken}` },
+  });
+  assert.equal(mfaRequired.statusCode, 403);
+  assert.equal(mfaRequired.json().error.code, "MFA_VERIFICATION_REQUIRED");
+
+  const preview = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(preview.statusCode, 200);
+  assert.match(preview.headers["content-type"] as string, /application\/vnd\.myskills-app\.package\+json/);
+  assert.equal(JSON.parse(preview.body).files.some((file: { path: string; content: string }) => (
+    file.path === "README.md" && file.content === "Summarize release notes."
+  )), true);
+  assert.equal(preview.headers["x-myskills-artifact-sha256"], createHash("sha256").update(preview.body).digest("hex"));
+});
+
 test("maintainers can approve and publish a clean public submission", async (t) => {
   const submissionStore = new MemorySubmissionStore();
   const authStore = new MemoryAuthStore("closed");
@@ -73,14 +127,39 @@ test("maintainers can approve and publish a clean public submission", async (t) 
   assert.equal(JSON.stringify(listResponse.json()).includes("storageKey"), false);
   assert.equal(JSON.stringify(listResponse.json()).includes("Summarize release notes."), false);
 
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+
+  const missingHashApprove = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve" },
+  });
+  assert.equal(missingHashApprove.statusCode, 400);
+  assert.equal(missingHashApprove.json().error.code, "APPROVAL_ARTIFACT_HASH_REQUIRED");
+
+  const wrongHashApprove = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256: "0".repeat(64) },
+  });
+  assert.equal(wrongHashApprove.statusCode, 409);
+  assert.equal(wrongHashApprove.json().error.code, "ARTIFACT_HASH_MISMATCH");
+
   const approveResponse = await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submissionId}/actions`,
     headers: { authorization: `Bearer ${maintainerToken}` },
-    payload: { action: "approve", reason: "checked Bearer abcdefghijklmnopqrstuvwxyz" },
+    payload: {
+      action: "approve",
+      artifactSha256,
+      reason: "checked Bearer abcdefghijklmnopqrstuvwxyz",
+    },
   });
   assert.equal(approveResponse.statusCode, 200);
   assert.equal(approveResponse.json().submission.reviewStatus, "approved");
+  assert.equal(approveResponse.json().submission.approvedArtifactSha256, artifactSha256);
   assert.equal(approveResponse.json().submission.publishedAt, null);
 
   const approvedListResponse = await app.inject({
@@ -91,6 +170,15 @@ test("maintainers can approve and publish a clean public submission", async (t) 
   assert.equal(approvedListResponse.statusCode, 200);
   assert.equal(approvedListResponse.json().submissions[0].id, submissionId);
   assert.equal(approvedListResponse.json().submissions[0].reviewStatus, "approved");
+  assert.equal(approvedListResponse.json().submissions[0].approvedArtifactSha256, artifactSha256);
+
+  const approvedPreview = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(approvedPreview.statusCode, 200);
+  assert.equal(createHash("sha256").update(approvedPreview.body).digest("hex"), artifactSha256);
 
   const publishResponse = await app.inject({
     method: "POST",
@@ -163,12 +251,13 @@ test("warning submissions cannot be approved or published", async (t) => {
   });
   assert.equal(submitResponse.statusCode, 202);
   const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
 
   const approveResponse = await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submissionId}/actions`,
     headers: { authorization: `Bearer ${maintainerToken}` },
-    payload: { action: "approve" },
+    payload: { action: "approve", artifactSha256 },
   });
   const publishResponse = await app.inject({
     method: "POST",
@@ -181,6 +270,162 @@ test("warning submissions cannot be approved or published", async (t) => {
   assert.equal(approveResponse.json().error.code, "PACKAGE_SCAN_NOT_PASSED");
   assert.equal(publishResponse.statusCode, 422);
   assert.equal(publishResponse.json().error.code, "PACKAGE_SCAN_NOT_PASSED");
+});
+
+test("deleted approved unpublished releases cannot be published from review", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const submitResponse = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  assert.equal(submitResponse.statusCode, 202);
+  const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+
+  const approveResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  assert.equal(approveResponse.statusCode, 200);
+
+  const deleteResponse = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "delete", reason: "remove before release" },
+  });
+  assert.equal(deleteResponse.statusCode, 200);
+  assert.equal(deleteResponse.json().release.lifecycleStatus, "archived");
+
+  const publishResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "publish" },
+  });
+  assert.equal(publishResponse.statusCode, 409);
+  assert.equal(publishResponse.json().error.code, "SUBMISSION_NOT_REVIEWABLE");
+
+  const reviewListResponse = await app.inject({
+    method: "GET",
+    url: "/v1/review/submissions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(reviewListResponse.statusCode, 200);
+  assert.equal(reviewListResponse.json().submissions.some((submission: { id: string }) => submission.id === submissionId), false);
+
+  const releaseResponse = await app.inject({
+    method: "GET",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0",
+  });
+  assert.equal(releaseResponse.statusCode, 404);
+});
+
+test("archived skills cannot keep submissions reviewable", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const submitResponse = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  assert.equal(submitResponse.statusCode, 202);
+  const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+
+  const archiveResponse = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "archive", reason: "close stale review" },
+  });
+  assert.equal(archiveResponse.statusCode, 200);
+  assert.equal(archiveResponse.json().skill.lifecycleStatus, "archived");
+
+  const reviewListResponse = await app.inject({
+    method: "GET",
+    url: "/v1/review/submissions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(reviewListResponse.statusCode, 200);
+  assert.equal(reviewListResponse.json().submissions.some((submission: { id: string }) => submission.id === submissionId), false);
+
+  const approveResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  assert.equal(approveResponse.statusCode, 409);
+  assert.equal(approveResponse.json().error.code, "SUBMISSION_NOT_REVIEWABLE");
+});
+
+test("new submissions reopen archived skills for review", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const firstSubmit = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  assert.equal(firstSubmit.statusCode, 202);
+
+  const archiveResponse = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "archive", reason: "close stale review" },
+  });
+  assert.equal(archiveResponse.statusCode, 200);
+
+  const secondSubmit = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload({ version: "0.2.0" }),
+  });
+  assert.equal(secondSubmit.statusCode, 202);
+  const secondSubmissionId = secondSubmit.json().submission.id as string;
+
+  const reviewListResponse = await app.inject({
+    method: "GET",
+    url: "/v1/review/submissions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(reviewListResponse.statusCode, 200);
+  assert.equal(reviewListResponse.json().submissions.some((submission: { id: string }) => submission.id === secondSubmissionId), true);
+
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, secondSubmissionId);
+  const approveResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${secondSubmissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  assert.equal(approveResponse.statusCode, 200);
+  assert.equal(approveResponse.json().submission.reviewStatus, "approved");
 });
 
 test("authors can withdraw unreviewed submissions", async (t) => {
@@ -270,11 +515,12 @@ test("release lifecycle actions hide and restore published releases", async (t) 
   });
   assert.equal(submitResponse.statusCode, 202);
   const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
   await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submissionId}/actions`,
     headers: { authorization: `Bearer ${maintainerToken}` },
-    payload: { action: "approve" },
+    payload: { action: "approve", artifactSha256 },
   });
   await app.inject({
     method: "POST",
@@ -315,6 +561,82 @@ test("release lifecycle actions hide and restore published releases", async (t) 
   assert.equal(visibleResponse.json().release.lifecycleStatus, "approved");
 });
 
+test("only MFA-verified privileged users can restore a maintainer-revoked safe release", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const unverifiedMaintainerToken = await addAndLogin(app, authStore, "unverified-maintainer@example.com", ["maintainer"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const submitted = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  const submissionId = submitted.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+  await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "publish" },
+  });
+  const revoked = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "revoke", reason: "security response" },
+  });
+  assert.equal(revoked.statusCode, 200);
+  const stored = firstStoredSubmission(submissionStore);
+  const approvedArtifactSha256 = stored.approvedArtifactSha256;
+  stored.approvedArtifactSha256 = "0".repeat(64);
+
+  const authorDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: { action: "restore" },
+  });
+  const mfaDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${unverifiedMaintainerToken}` },
+    payload: { action: "restore" },
+  });
+  const unsafeDenied = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "restore" },
+  });
+  stored.approvedArtifactSha256 = approvedArtifactSha256;
+  const restored = await app.inject({
+    method: "POST",
+    url: "/v1/skills/release-notes-helper/releases/0.1.0/actions",
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "restore", reason: "scan and artifact revalidated" },
+  });
+
+  assert.equal(authorDenied.statusCode, 403);
+  assert.equal(authorDenied.json().error.code, "RELEASE_RESTORE_ROLE_REQUIRED");
+  assert.equal(mfaDenied.statusCode, 403);
+  assert.equal(mfaDenied.json().error.code, "MFA_VERIFICATION_REQUIRED");
+  assert.equal(unsafeDenied.statusCode, 409);
+  assert.equal(unsafeDenied.json().error.code, "RELEASE_RESTORE_UNSAFE");
+  assert.equal(restored.statusCode, 200);
+  assert.equal(restored.json().release.lifecycleStatus, "approved");
+});
+
 test("publish revalidates the stored package manifest", async (t) => {
   const submissionStore = new MemorySubmissionStore();
   const authStore = new MemoryAuthStore("closed");
@@ -331,12 +653,13 @@ test("publish revalidates the stored package manifest", async (t) => {
   });
   assert.equal(submitResponse.statusCode, 202);
   const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
 
   const approveResponse = await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${submissionId}/actions`,
     headers: { authorization: `Bearer ${maintainerToken}` },
-    payload: { action: "approve" },
+    payload: { action: "approve", artifactSha256 },
   });
   assert.equal(approveResponse.statusCode, 200);
 
@@ -349,6 +672,7 @@ test("publish revalidates the stored package manifest", async (t) => {
     ...JSON.parse(manifestFile.content),
     name: "different-helper",
   });
+  stored.approvedArtifactSha256 = currentStoredArtifactSha256(stored);
 
   const publishResponse = await app.inject({
     method: "POST",
@@ -363,6 +687,55 @@ test("publish revalidates the stored package manifest", async (t) => {
     event.action === "release.publish" &&
     event.decision === "deny" &&
     event.details.reason === "PACKAGE_MANIFEST_MISMATCH"
+  )), true);
+});
+
+test("publish fails when the artifact changes after approval", async (t) => {
+  const submissionStore = new MemorySubmissionStore();
+  const authStore = new MemoryAuthStore("closed");
+  const app = buildReviewApp({ authStore, submissionStore });
+  t.after(() => app.close());
+  const authorToken = await addAndLogin(app, authStore, "author@example.com", ["author"]);
+  const maintainerToken = await addAndLoginWithMfa(app, authStore, "maintainer@example.com", ["maintainer"]);
+
+  const submitResponse = await app.inject({
+    method: "POST",
+    url: "/v1/submissions",
+    headers: { authorization: `Bearer ${authorToken}` },
+    payload: cleanSubmissionPayload(),
+  });
+  assert.equal(submitResponse.statusCode, 202);
+  const submissionId = submitResponse.json().submission.id as string;
+  const artifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, submissionId);
+
+  const approveResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "approve", artifactSha256 },
+  });
+  assert.equal(approveResponse.statusCode, 200);
+
+  const stored = firstStoredSubmission(submissionStore);
+  const readme = stored.artifact.payload.files.find((file) => file.path === "README.md");
+  if (!readme) {
+    throw new Error("Expected stored README.");
+  }
+  readme.content = "Changed after approval.";
+
+  const publishResponse = await app.inject({
+    method: "POST",
+    url: `/v1/review/submissions/${submissionId}/actions`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+    payload: { action: "publish" },
+  });
+
+  assert.equal(publishResponse.statusCode, 409);
+  assert.equal(publishResponse.json().error.code, "APPROVED_ARTIFACT_HASH_MISMATCH");
+  assert.equal(submissionStore.auditEvents().some((event) => (
+    event.action === "release.publish" &&
+    event.decision === "deny" &&
+    event.details.reason === "approved_artifact_hash_mismatch"
   )), true);
 });
 
@@ -390,11 +763,12 @@ test("release routes hide unpublished and private releases consistently", async 
   });
   assert.equal(privateSubmit.statusCode, 202);
   const privateId = privateSubmit.json().submission.id as string;
+  const privateArtifactSha256 = await fetchReviewArtifactSha256(app, maintainerToken, privateId);
   await app.inject({
     method: "POST",
     url: `/v1/review/submissions/${privateId}/actions`,
     headers: { authorization: `Bearer ${maintainerToken}` },
-    payload: { action: "approve" },
+    payload: { action: "approve", artifactSha256: privateArtifactSha256 },
   });
   await app.inject({
     method: "POST",
@@ -444,6 +818,22 @@ function buildReviewApp(options: {
     authService: new AuthService(authStore),
     submissionService: new SubmissionService(options.submissionStore),
   });
+}
+
+async function fetchReviewArtifactSha256(
+  app: ReturnType<typeof buildApp>,
+  maintainerToken: string,
+  submissionId: string,
+): Promise<string> {
+  const preview = await app.inject({
+    method: "GET",
+    url: `/v1/review/submissions/${submissionId}/bundle?platform=codex`,
+    headers: { authorization: `Bearer ${maintainerToken}` },
+  });
+  assert.equal(preview.statusCode, 200);
+  const sha256 = createHash("sha256").update(preview.body).digest("hex");
+  assert.equal(preview.headers["x-myskills-artifact-sha256"], sha256);
+  return sha256;
 }
 
 async function addAndLogin(
@@ -562,6 +952,7 @@ function cleanSubmissionPayload(input: {
 function firstStoredSubmission(submissionStore: MemorySubmissionStore) {
   const internalStore = submissionStore as unknown as {
     submissions: Map<string, {
+      approvedArtifactSha256: string | null;
       artifact: {
         payload: {
           files: Array<{ path: string; content: string }>;
@@ -574,4 +965,8 @@ function firstStoredSubmission(submissionStore: MemorySubmissionStore) {
     throw new Error("Expected stored submission.");
   }
   return stored;
+}
+
+function currentStoredArtifactSha256(stored: ReturnType<typeof firstStoredSubmission>): string {
+  return createHash("sha256").update(JSON.stringify(stored.artifact.payload)).digest("hex");
 }

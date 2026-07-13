@@ -35,6 +35,7 @@ export interface StoredSubmission {
   platforms: SkillPlatformVariant[];
   reviewStatus: ReviewStatus;
   securityStatus: SecurityStatus;
+  approvedArtifactSha256: string | null;
   publishedAt: string | null;
   createdAt: string;
   artifact: {
@@ -71,6 +72,7 @@ export interface ReviewSubmissionSummary {
   lifecycleStatus: SkillLifecycleStatus;
   reviewStatus: ReviewStatus;
   securityStatus: SecurityStatus;
+  approvedArtifactSha256: string | null;
   platforms: SkillPlatformVariant[];
   findingCount: number;
   createdAt: string;
@@ -85,6 +87,7 @@ export interface ReviewActionResult {
   lifecycleStatus: SkillLifecycleStatus;
   reviewStatus: ReviewStatus;
   securityStatus: SecurityStatus;
+  approvedArtifactSha256: string | null;
   publishedAt: string | null;
 }
 
@@ -158,6 +161,15 @@ export interface UserSubmissionBundle extends UserSubmissionSummary {
   payload: ArtifactPayload;
 }
 
+export interface ReviewSubmissionBundle extends ReviewSubmissionSummary {
+  artifact: {
+    sha256: string;
+    byteSize: number;
+    contentType: string;
+  };
+  payload: ArtifactPayload;
+}
+
 export interface SubmissionStore {
   createSubmission(input: CreateSubmissionInput & {
     artifact: StoredSubmission["artifact"];
@@ -168,7 +180,8 @@ export interface SubmissionStore {
   getUserSubmissionBundle(input: { userId: string; submissionId: string; platform?: string }): Promise<UserSubmissionBundle | null>;
   performSubmissionOwnerAction(input: { actorId: string; submissionId: string; action: SubmissionOwnerAction; reason?: string }): Promise<UserSubmissionSummary>;
   listReviewSubmissions(): Promise<ReviewSubmissionSummary[]>;
-  approveSubmission(input: { actorId: string; submissionId: string; reason?: string }): Promise<ReviewActionResult>;
+  getReviewSubmissionBundle(input: { submissionId: string; platform?: string }): Promise<ReviewSubmissionBundle | null>;
+  approveSubmission(input: { actorId: string; submissionId: string; artifactSha256: string; reason?: string }): Promise<ReviewActionResult>;
   requestChanges(input: { actorId: string; submissionId: string; reason?: string }): Promise<ReviewActionResult>;
   rejectSubmission(input: { actorId: string; submissionId: string; reason?: string }): Promise<ReviewActionResult>;
   publishSubmission(input: { actorId: string; submissionId: string; reason?: string }): Promise<ReviewActionResult>;

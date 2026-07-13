@@ -106,9 +106,9 @@ function FrameHeader({ className, ...props }: React.ComponentProps<"header">) {
   )
 }
 
-function FrameTitle({ className, ...props }: React.ComponentProps<"div">) {
+function FrameTitle({ className, ...props }: React.ComponentProps<"h2">) {
   return (
-    <div
+    <h2
       className={cn("text-sm font-semibold", className)}
       data-slot="frame-panel-title"
       {...props}

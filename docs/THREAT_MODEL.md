@@ -1,21 +1,21 @@
 # Threat Model
 
-Version: 0.1.0-alpha.0
-Last updated: 2026-06-04
+Version: 0.1.0-beta.2
+Last updated: 2026-06-30
 
 ## Scope
 
-This model covers the public alpha repository: Fastify API, Postgres schema, object-storage artifact boundary, React web app, CLI, stdio MCP server, HTTP MCP adapter, package parser/scanner, Docker packaging, and release workflow.
+This model covers the public beta repository: Fastify API, Postgres schema, object-storage artifact boundary, React web app, CLI, stdio MCP server, HTTP MCP adapter, package parser/scanner, Docker packaging, and release workflow.
 
-Out of scope for alpha: hosted service operations, multi-instance federation, paid support, container image publishing, and external provider login flows that are not implemented yet.
+Out of scope for beta: hosted-service guarantees, multi-instance federation, paid support, container image publishing, and external provider login flows that are not implemented yet.
 
 ## Assumptions
 
 - Deployments are self-hosted by operators who control Postgres, object storage, email provider, TLS, and reverse proxy configuration.
-- Public alpha users may run the app locally or in a test environment.
-- Alpha deployments should not be treated as business-critical systems without additional operational controls.
+- Public beta users may run the app locally, self-host experimentally, or evaluate the documented API/web/CLI/MCP surfaces.
+- Beta deployments should not be treated as business-critical systems without additional operational controls.
 - Uploaded packages are untrusted until validation, scan, review, and publication gates pass.
-- Alpha posture assumes closed or request-gated registration, maintainer-reviewed publication, HTTPS ingress, private object storage, and no automatic package execution.
+- Beta posture assumes closed or request-gated registration, maintainer-reviewed publication, HTTPS ingress, private object storage, and no automatic package execution.
 
 ## Assets
 
@@ -27,8 +27,8 @@ Out of scope for alpha: hosted service operations, multi-instance federation, pa
 
 ## Trust Boundaries
 
-- Browser to API over HTTP(S), using session bearer tokens.
-- CLI to API over HTTP(S), using stored sessions or scoped API tokens.
+- Browser to API over HTTP(S), using token-free login/MFA responses plus an HttpOnly SameSite `myskills_session` cookie that the API maps to server-side session authentication.
+- CLI to API over HTTP(S), using stored bearer sessions or scoped API tokens.
 - MCP clients to HTTP MCP adapter, using scoped API tokens before protocol handling.
 - MCP stdio process to API, using explicit `MYSKILLS_TOKEN`.
 - API to Postgres for canonical product state.
@@ -48,10 +48,10 @@ Out of scope for alpha: hosted service operations, multi-instance federation, pa
 
 ## Abuse Paths And Current Mitigations
 
-| Threat | Impact | Alpha likelihood | Current mitigations | Remaining work |
+| Threat | Impact | Beta likelihood | Current mitigations | Remaining work |
 | --- | --- | --- | --- | --- |
 | Unauthorized discovery of private or unsafe skills | Metadata or package-content exposure | Medium | Server-side public/review/security/publish predicates, generic denial paths, API/CLI/MCP tests | Broader cross-surface regression matrix for future role-gated MCP/admin tools |
-| Token theft or replay | Account/API misuse | Medium | Opaque hashed sessions and API tokens, scoped tokens, revocation on disable/delete/password reset, MFA-gated privileged actions, CLI platform keyring storage with user-only file fallback | Browser/device login for CLI |
+| Token theft or replay | Account/API misuse | Medium | Opaque hashed sessions and API tokens, scoped tokens, token-free browser login/MFA responses, revocation on disable/delete/password reset, MFA-gated privileged actions, CLI platform keyring storage with user-only file fallback | Browser/device login for CLI |
 | Auth brute force across restarts or replicas | Account takeover pressure and noisy abuse | Medium | Shared database-backed auth throttling before expensive auth work | Ingress throttles, alerts, and higher-volume abuse controls |
 | Malicious package archive | Path traversal, unsafe install content, secret leakage | Medium | Root manifest validation, archive traversal/symlink/encryption/compression/size/file-count defenses, blocking scans, maintainer review | Background scan jobs, richer policy fixtures, deprecate/revoke workflows |
 | Malicious prompt or uncommon secret passes narrow scanner | Reviewer social engineering or private-data exposure | Medium | Baseline secret/command/install-hook rules plus maintainer review | Broader fixture-backed scanner corpus and reviewer diff views |
@@ -62,9 +62,9 @@ Out of scope for alpha: hosted service operations, multi-instance federation, pa
 | Release artifact mismatch | Public tag does not match source or package version | Low | Clean-worktree artifact script, `dist/`-only output guard, tag/version check, checksums, GitHub tag workflow | GitHub Release/container publishing policy |
 | Release pipeline compromise or weak provenance | Harder to prove artifacts came from reviewed source | Low to medium | Reproducible source archive, checksums, release workflow, production Docker targets | SHA-pinned actions, digest-pinned base images, SBOM, provenance, signing, protected release tags |
 
-## Alpha Risk Acceptance
+## Public Beta Risk Acceptance
 
-The alpha can be public if the repo passes release checks and GitHub private vulnerability reporting is enabled. The accepted alpha risk is that operators must not rely on it for business-critical production workloads until the business-safe release goal is complete.
+The beta can be public if the repo passes release checks, beta support/compatibility/upgrade docs are current, and GitHub private vulnerability reporting is enabled. The accepted beta risk is that operators must not rely on it for business-critical production workloads until the business-safe release goal is complete.
 
 ## Business-Safe Release Security Gates
 

@@ -1,6 +1,8 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createHash, randomUUID } from "node:crypto";
 
 export interface ArtifactObjectStorage {
+  // Artifact keys are immutable: implementations must fail rather than overwrite an existing key.
   putObject(input: {
     key: string;
     body: string;
@@ -8,6 +10,8 @@ export interface ArtifactObjectStorage {
     sha256: string;
   }): Promise<void>;
   getObject(key: string): Promise<ArtifactObject>;
+  deleteObject(key: string): Promise<void>;
+  checkReady(): Promise<void>;
 }
 
 export interface ArtifactObject {
@@ -20,6 +24,9 @@ export class MemoryArtifactObjectStorage implements ArtifactObjectStorage {
   private objects = new Map<string, { body: string; contentType: string; sha256: string }>();
 
   async putObject(input: { key: string; body: string; contentType: string; sha256: string }): Promise<void> {
+    if (this.objects.has(input.key)) {
+      throw new Error("Artifact object already exists.");
+    }
     this.objects.set(input.key, {
       body: input.body,
       contentType: input.contentType,
@@ -38,9 +45,18 @@ export class MemoryArtifactObjectStorage implements ArtifactObjectStorage {
       sha256: object.sha256,
     };
   }
+
+  async deleteObject(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
+
+  async checkReady(): Promise<void> {}
 }
 
 export class S3ArtifactObjectStorage implements ArtifactObjectStorage {
+  private readyUntil = 0;
+  private readinessInFlight: Promise<void> | null = null;
+
   constructor(
     private readonly options: {
       bucket: string;
@@ -55,6 +71,7 @@ export class S3ArtifactObjectStorage implements ArtifactObjectStorage {
       Body: input.body,
       ContentType: input.contentType,
       ContentLength: Buffer.byteLength(input.body),
+      IfNoneMatch: "*",
       Metadata: {
         sha256: input.sha256,
       },
@@ -77,6 +94,53 @@ export class S3ArtifactObjectStorage implements ArtifactObjectStorage {
       contentType: response.ContentType,
       sha256: response.Metadata?.sha256,
     };
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    await this.options.client.send(new DeleteObjectCommand({
+      Bucket: this.options.bucket,
+      Key: key,
+    }));
+  }
+
+  async checkReady(): Promise<void> {
+    if (this.readyUntil > Date.now()) {
+      return;
+    }
+    if (this.readinessInFlight) {
+      return this.readinessInFlight;
+    }
+    this.readinessInFlight = this.performReadinessCheck();
+    try {
+      await this.readinessInFlight;
+    } finally {
+      this.readinessInFlight = null;
+    }
+  }
+
+  private async performReadinessCheck(): Promise<void> {
+    const body = "myskills-ready";
+    const key = `.myskills-readiness/${randomUUID()}`;
+    let written = false;
+    try {
+      // Exercise the same least-privilege object permissions used at runtime; no bucket-list permission is required.
+      await this.putObject({
+        key,
+        body,
+        contentType: "text/plain",
+        sha256: createHash("sha256").update(body).digest("hex"),
+      });
+      written = true;
+      const stored = await this.getObject(key);
+      if (stored.body !== body) {
+        throw new Error("Artifact readiness object did not round trip.");
+      }
+    } finally {
+      if (written) {
+        await this.deleteObject(key);
+      }
+    }
+    this.readyUntil = Date.now() + 30_000;
   }
 }
 

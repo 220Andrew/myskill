@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version or commit
       description: MySkills release, npm package version, or commit SHA.
-      placeholder: "0.1.0-alpha.3 or 25f0989"
+      placeholder: "0.1.0-beta.1 or 25f0989"
     validations:
       required: true
   - type: dropdown

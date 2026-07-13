@@ -23,8 +23,14 @@ import type {
   CreateSessionInput,
   CreateUserWithPasswordInput,
   CreateUserWithPasswordResult,
+  ChangePasswordAndRevokeCredentialsInput,
+  CompleteEmailChangeInput,
+  CompleteEmailChangeResult,
   CompleteRegistrationInvitationInput,
   CompleteRegistrationInvitationResult,
+  CompletePasswordResetInput,
+  DisableMfaAndRevokeCredentialsInput,
+  AdminUserStatusChangeResult,
   ProviderConfigRecord,
   ProviderRoleMappingRecord,
   UpsertProviderConfigInput,
@@ -299,6 +305,36 @@ export class MemoryAuthStore implements AuthStore {
     return toRecord(user);
   }
 
+  async applyAdminUserStatusChange(input: {
+    userId: string;
+    status: UserStatus;
+    emailVerifiedAt?: Date | null;
+    protectLastActiveOwner: boolean;
+    revokeCredentials: boolean;
+  }): Promise<AdminUserStatusChangeResult> {
+    const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
+    if (!user) {
+      return { outcome: "not_found" };
+    }
+    if (
+      input.protectLastActiveOwner &&
+      user.status === "active" &&
+      user.roles.includes("owner") &&
+      input.status !== "active" &&
+      [...this.users.values()].filter((candidate) => candidate.status === "active" && candidate.roles.includes("owner")).length <= 1
+    ) {
+      return { outcome: "last_owner" };
+    }
+    user.status = input.status;
+    if (input.emailVerifiedAt !== undefined) {
+      user.emailVerifiedAt = input.emailVerifiedAt;
+    }
+    if (input.revokeCredentials) {
+      await this.revokeUserCredentials(user.id);
+    }
+    return { outcome: "updated", user: toRecord(user) };
+  }
+
   async updateUserRoles(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
     const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
     if (!user) {
@@ -308,6 +344,14 @@ export class MemoryAuthStore implements AuthStore {
     return toRecord(user);
   }
 
+  async updateUserRolesAndRevokeCredentials(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
+    const updated = await this.updateUserRoles(input);
+    if (updated) {
+      await this.revokeUserCredentials(input.userId);
+    }
+    return updated;
+  }
+
   async updatePasswordCredential(input: { userId: string; passwordHash: string; passwordUpdatedAt?: Date }): Promise<boolean> {
     const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
     if (!user || user.passwordHash === null) {
@@ -315,6 +359,63 @@ export class MemoryAuthStore implements AuthStore {
     }
     user.passwordHash = input.passwordHash;
     return true;
+  }
+
+  async changePasswordAndRevokeCredentials(input: ChangePasswordAndRevokeCredentialsInput): Promise<boolean> {
+    const user = [...this.users.values()].find((candidate) => candidate.id === input.userId);
+    if (!user || user.passwordHash === null) {
+      return false;
+    }
+    const previousPasswordHash = user.passwordHash;
+    const credentials = this.snapshotCredentialRevocationState(user.id);
+    try {
+      user.passwordHash = input.passwordHash;
+      await this.revokeUserCredentials(user.id);
+      return true;
+    } catch (error) {
+      user.passwordHash = previousPasswordHash;
+      this.restoreCredentialRevocationState(credentials);
+      throw error;
+    }
+  }
+
+  async completePasswordReset(input: CompletePasswordResetInput): Promise<boolean> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    const token = this.authActionTokens.get(input.tokenHash);
+    if (!token || token.purpose !== "password_reset" || token.usedAt || token.expiresAt <= now) {
+      return false;
+    }
+    const user = [...this.users.values()].find((candidate) => candidate.id === token.userId);
+    if (!user || user.status !== "active" || !user.emailVerifiedAt || user.passwordHash === null) {
+      return false;
+    }
+
+    const previousPasswordHash = user.passwordHash;
+    const resetTokenStates = [...this.authActionTokens.values()]
+      .filter((candidate) => candidate.userId === user.id && candidate.purpose === "password_reset")
+      .map((candidate) => ({ tokenHash: candidate.tokenHash, usedAt: candidate.usedAt }));
+    const credentials = this.snapshotCredentialRevocationState(user.id);
+    try {
+      user.passwordHash = input.passwordHash;
+      for (const candidate of this.authActionTokens.values()) {
+        if (candidate.userId === user.id && candidate.purpose === "password_reset" && !candidate.usedAt) {
+          candidate.usedAt = usedAt;
+        }
+      }
+      await this.revokeUserCredentials(user.id);
+      return true;
+    } catch (error) {
+      user.passwordHash = previousPasswordHash;
+      for (const state of resetTokenStates) {
+        const candidate = this.authActionTokens.get(state.tokenHash);
+        if (candidate) {
+          candidate.usedAt = state.usedAt;
+        }
+      }
+      this.restoreCredentialRevocationState(credentials);
+      throw error;
+    }
   }
 
   async createAuthActionToken(input: CreateAuthActionTokenInput): Promise<AuthActionTokenRecord> {
@@ -346,6 +447,46 @@ export class MemoryAuthStore implements AuthStore {
     token.usedAt = input.usedAt ?? now;
     const user = [...this.users.values()].find((candidate) => candidate.id === token.userId);
     return user ? { ...toAuthActionTokenRecord(token), user: toRecord(user) } : null;
+  }
+
+  async completeEmailChangeAndRevokeCredentials(input: CompleteEmailChangeInput): Promise<CompleteEmailChangeResult | null> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    const token = this.authActionTokens.get(input.tokenHash);
+    if (!token || token.purpose !== "email_change" || token.usedAt || token.expiresAt <= now) {
+      return null;
+    }
+    const user = [...this.users.values()].find((candidate) => candidate.id === token.userId);
+    if (!user || user.status !== "active" || !user.emailVerifiedAt) {
+      return null;
+    }
+    const nextEmail = token.sentToNormalizedEmail;
+    const existing = this.users.get(nextEmail);
+    if (existing && existing.id !== user.id) {
+      return { outcome: "email_in_use" };
+    }
+
+    const previousEmail = user.email;
+    const previousEmailVerifiedAt = user.emailVerifiedAt;
+    const previousTokenUsedAt = token.usedAt;
+    const credentials = this.snapshotCredentialRevocationState(user.id);
+    try {
+      this.users.delete(previousEmail);
+      user.email = nextEmail;
+      user.emailVerifiedAt = usedAt;
+      this.users.set(nextEmail, user);
+      token.usedAt = usedAt;
+      await this.revokeUserCredentials(user.id);
+      return { outcome: "changed", user: toRecord(user), previousEmail };
+    } catch (error) {
+      this.users.delete(nextEmail);
+      user.email = previousEmail;
+      user.emailVerifiedAt = previousEmailVerifiedAt;
+      this.users.set(previousEmail, user);
+      token.usedAt = previousTokenUsedAt;
+      this.restoreCredentialRevocationState(credentials);
+      throw error;
+    }
   }
 
   async countActiveOwnersExcluding(userId: string): Promise<number> {
@@ -572,6 +713,41 @@ export class MemoryAuthStore implements AuthStore {
     return count;
   }
 
+  async disableMfaAndRevokeCredentials(input: DisableMfaAndRevokeCredentialsInput): Promise<number> {
+    const factors = [...this.mfaFactors.entries()]
+      .filter(([, factor]) => factor.userId === input.userId)
+      .map(([id, factor]) => [id, { ...factor }] as const);
+    const recoveryCodes = [...this.mfaRecoveryCodes.entries()]
+      .filter(([, code]) => code.userId === input.userId)
+      .map(([id, code]) => [id, { ...code }] as const);
+    const credentials = this.snapshotCredentialRevocationState(input.userId);
+    try {
+      const disabledFactors = await this.disableMfaTotpFactorsForUser(input);
+      await this.replaceMfaRecoveryCodes({ userId: input.userId, codeHashes: [] });
+      await this.revokeUserCredentials(input.userId);
+      return disabledFactors;
+    } catch (error) {
+      for (const [id, factor] of this.mfaFactors) {
+        if (factor.userId === input.userId) {
+          this.mfaFactors.delete(id);
+        }
+      }
+      for (const [id, factor] of factors) {
+        this.mfaFactors.set(id, factor);
+      }
+      for (const [id, code] of this.mfaRecoveryCodes) {
+        if (code.userId === input.userId) {
+          this.mfaRecoveryCodes.delete(id);
+        }
+      }
+      for (const [id, code] of recoveryCodes) {
+        this.mfaRecoveryCodes.set(id, code);
+      }
+      this.restoreCredentialRevocationState(credentials);
+      throw error;
+    }
+  }
+
   async disableOtherMfaTotpFactorsForUser(input: { userId: string; factorId: string; disabledAt?: Date }): Promise<number> {
     const disabledAt = input.disabledAt ?? new Date();
     let count = 0;
@@ -689,6 +865,38 @@ export class MemoryAuthStore implements AuthStore {
       })
       .slice(0, input.limit)
       .map(toAuditEventRecord);
+  }
+
+  private snapshotCredentialRevocationState(userId: string): {
+    sessions: Array<{ tokenHash: string; revokedAt: Date | null }>;
+    apiTokens: Array<{ tokenHash: string; revokedAt: Date | null }>;
+  } {
+    return {
+      sessions: [...this.sessions.entries()]
+        .filter(([, session]) => session.userId === userId)
+        .map(([tokenHash, session]) => ({ tokenHash, revokedAt: session.revokedAt })),
+      apiTokens: [...this.apiTokens.entries()]
+        .filter(([, token]) => token.userId === userId)
+        .map(([tokenHash, token]) => ({ tokenHash, revokedAt: token.revokedAt })),
+    };
+  }
+
+  private restoreCredentialRevocationState(snapshot: {
+    sessions: Array<{ tokenHash: string; revokedAt: Date | null }>;
+    apiTokens: Array<{ tokenHash: string; revokedAt: Date | null }>;
+  }): void {
+    for (const state of snapshot.sessions) {
+      const session = this.sessions.get(state.tokenHash);
+      if (session) {
+        session.revokedAt = state.revokedAt;
+      }
+    }
+    for (const state of snapshot.apiTokens) {
+      const token = this.apiTokens.get(state.tokenHash);
+      if (token) {
+        token.revokedAt = state.revokedAt;
+      }
+    }
   }
 }
 

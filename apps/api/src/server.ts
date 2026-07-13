@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { createDb, createPgPool } from "./db/client.js";
 import { createArtifactObjectStorageFromEnv } from "./artifacts/storage.js";
 import { PostgresAuthRateLimiter } from "./auth/rate-limit.js";
@@ -15,6 +16,9 @@ const port = Number.parseInt(process.env.PORT ?? "3001", 10);
 const host = process.env.HOST ?? "0.0.0.0";
 const pool = createPgPool();
 const db = createDb(pool);
+const artifactStorage = createArtifactObjectStorageFromEnv(process.env);
+const submissionStore = new PostgresSubmissionStore(db, { artifactStorage });
+await submissionStore.reconcilePendingArtifactWrites();
 const app = buildApp({
   skillRepository: new PostgresSkillRepository(db),
   authService: new AuthService(new PostgresAuthStore(db), {
@@ -28,13 +32,32 @@ const app = buildApp({
     authActionTokenLimiter: new PostgresAuthRateLimiter(pool, { maxAttempts: 10, windowMs: 15 * 60 * 1000 }),
     notificationSink: createAuthNotificationSinkFromEnv(process.env),
   }),
-  submissionService: new SubmissionService(new PostgresSubmissionStore(db, {
-    artifactStorage: createArtifactObjectStorageFromEnv(process.env),
-  })),
+  submissionService: new SubmissionService(submissionStore),
   teamService: new TeamService(new PostgresTeamStore(db)),
   allowedOrigins: allowedOrigins(),
+  trustProxy: trustProxy(),
+  requestLimiter: new PostgresAuthRateLimiter(pool, { maxAttempts: 600, windowMs: 60_000 }),
+  readinessProbes: {
+    postgres: async () => {
+      await pool.query("SELECT 1");
+    },
+    artifactStorageRequired: Boolean(artifactStorage),
+    artifactStorage: artifactStorage ? () => artifactStorage.checkReady() : undefined,
+  },
   logger: process.env.NODE_ENV !== "test",
 });
+const artifactReconciliationTimer = artifactStorage
+  ? setInterval(() => {
+      void submissionStore.reconcilePendingArtifactWrites().then(({ retained }) => {
+        if (retained > 0) {
+          app.log.warn({ retained }, "Artifact recovery intents remain pending.");
+        }
+      }).catch((error: unknown) => {
+        app.log.error({ err: error }, "Artifact recovery reconciliation failed.");
+      });
+    }, 15 * 60 * 1000)
+  : undefined;
+artifactReconciliationTimer?.unref();
 
 try {
   await app.listen({ port, host });
@@ -45,6 +68,9 @@ try {
 }
 
 const shutdown = async () => {
+  if (artifactReconciliationTimer) {
+    clearInterval(artifactReconciliationTimer);
+  }
   await app.close();
   await pool.end();
 };
@@ -62,6 +88,46 @@ function allowedOrigins(): string[] {
   return configured
     ? configured.split(",").map((origin) => origin.trim()).filter(Boolean)
     : ["http://localhost:3000", "http://127.0.0.1:3000"];
+}
+
+function trustProxy(): Parameters<typeof buildApp>[0]["trustProxy"] {
+  const configured = process.env.TRUST_PROXY?.trim();
+  if (!configured || configured === "false") {
+    return undefined;
+  }
+  if (configured === "true") {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("TRUST_PROXY=true is too broad for production. Use a hop count or proxy address list.");
+    }
+    return true;
+  }
+  if (/^[1-9]\d*$/.test(configured)) {
+    return Number.parseInt(configured, 10);
+  }
+  const entries = configured.split(",").map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0 || entries.some((entry) => !isValidProxyAddress(entry))) {
+    throw new Error("TRUST_PROXY must be false, a positive hop count, or a comma-separated IP/CIDR proxy address list.");
+  }
+  return entries;
+}
+
+function isValidProxyAddress(entry: string): boolean {
+  const [address, prefix, extra] = entry.split("/");
+  if (!address || extra !== undefined) {
+    return false;
+  }
+  const version = isIP(address);
+  if (version === 0) {
+    return false;
+  }
+  if (prefix === undefined) {
+    return true;
+  }
+  if (!/^\d+$/.test(prefix)) {
+    return false;
+  }
+  const prefixLength = Number.parseInt(prefix, 10);
+  return prefixLength >= 0 && prefixLength <= (version === 4 ? 32 : 128);
 }
 
 function requiredAuthSecret(): string {

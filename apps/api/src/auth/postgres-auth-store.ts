@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { AppError } from "@myskills-app/core";
 import { roles as authRoles, type RegistrationMode, type Role, type UserStatus } from "@myskills-app/auth";
 import { sanitizeAuditDetails } from "../audit/sanitize.js";
@@ -41,8 +41,14 @@ import type {
   CreateSessionInput,
   CreateUserWithPasswordInput,
   CreateUserWithPasswordResult,
+  ChangePasswordAndRevokeCredentialsInput,
+  CompleteEmailChangeInput,
+  CompleteEmailChangeResult,
   CompleteRegistrationInvitationInput,
   CompleteRegistrationInvitationResult,
+  CompletePasswordResetInput,
+  DisableMfaAndRevokeCredentialsInput,
+  AdminUserStatusChangeResult,
   ProviderConfigRecord,
   ProviderMappedRole,
   ProviderRoleMappingRecord,
@@ -290,8 +296,73 @@ export class PostgresAuthStore implements AuthStore {
     return user ? { ...toRecord(user), roles: await this.rolesForUser(user.id) } : null;
   }
 
-  async updateUserRoles(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
+  async applyAdminUserStatusChange(input: {
+    userId: string;
+    status: UserStatus;
+    emailVerifiedAt?: Date | null;
+    protectLastActiveOwner: boolean;
+    revokeCredentials: boolean;
+  }): Promise<AdminUserStatusChangeResult> {
     return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('myskills-active-owner-guard'))`);
+      const [target] = await tx.select().from(users).where(eq(users.id, input.userId)).for("update").limit(1);
+      if (!target) {
+        return { outcome: "not_found" };
+      }
+      const targetRoles = await rolesForUser(tx, target.id);
+      if (
+        input.protectLastActiveOwner &&
+        target.status === "active" &&
+        targetRoles.includes("owner") &&
+        input.status !== "active"
+      ) {
+        const activeOwners = await tx
+          .select({ id: users.id })
+          .from(users)
+          .innerJoin(roleAssignments, eq(roleAssignments.userId, users.id))
+          .where(and(eq(roleAssignments.role, "owner"), eq(users.status, "active")));
+        if (activeOwners.length <= 1) {
+          return { outcome: "last_owner" };
+        }
+      }
+
+      const set: Partial<typeof users.$inferInsert> = { status: input.status, updatedAt: new Date() };
+      if (input.emailVerifiedAt !== undefined) {
+        set.emailVerifiedAt = input.emailVerifiedAt;
+      }
+      const [updated] = await tx.update(users).set(set).where(eq(users.id, input.userId)).returning();
+      if (!updated) {
+        return { outcome: "not_found" };
+      }
+      if (input.revokeCredentials) {
+        const revokedAt = new Date();
+        await tx.update(authSessions).set({ revokedAt }).where(and(
+          eq(authSessions.userId, input.userId),
+          isNull(authSessions.revokedAt),
+        ));
+        await tx.update(apiTokens).set({ revokedAt }).where(and(
+          eq(apiTokens.userId, input.userId),
+          isNull(apiTokens.revokedAt),
+        ));
+      }
+      return { outcome: "updated", user: { ...toRecord(updated), roles: targetRoles } };
+    });
+  }
+
+  async updateUserRoles(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
+    return this.updateUserRolesAtomically(input, false);
+  }
+
+  async updateUserRolesAndRevokeCredentials(input: { userId: string; roles: Role[] }): Promise<AuthUserRecord | null> {
+    return this.updateUserRolesAtomically(input, true);
+  }
+
+  private async updateUserRolesAtomically(
+    input: { userId: string; roles: Role[] },
+    revokeCredentials: boolean,
+  ): Promise<AuthUserRecord | null> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('myskills-active-owner-guard'))`);
       if (!input.roles.includes("owner")) {
         await tx.execute(sql`
           select ${users.id}
@@ -328,6 +399,17 @@ export class PostgresAuthStore implements AuthStore {
           throw new AppError("At least one active owner is required.", "LAST_OWNER_REQUIRED", 409);
         }
       }
+      if (revokeCredentials) {
+        const revokedAt = new Date();
+        await tx.update(authSessions).set({ revokedAt }).where(and(
+          eq(authSessions.userId, input.userId),
+          isNull(authSessions.revokedAt),
+        ));
+        await tx.update(apiTokens).set({ revokedAt }).where(and(
+          eq(apiTokens.userId, input.userId),
+          isNull(apiTokens.revokedAt),
+        ));
+      }
       return { ...toRecord(user), roles: input.roles };
     });
   }
@@ -342,6 +424,67 @@ export class PostgresAuthStore implements AuthStore {
       .where(eq(passwordCredentials.userId, input.userId))
       .returning({ userId: passwordCredentials.userId });
     return Boolean(credential);
+  }
+
+  async changePasswordAndRevokeCredentials(input: ChangePasswordAndRevokeCredentialsInput): Promise<boolean> {
+    const changedAt = input.passwordUpdatedAt ?? new Date();
+    return this.db.transaction(async (tx) => {
+      const [credential] = await tx
+        .update(passwordCredentials)
+        .set({
+          passwordHash: input.passwordHash,
+          passwordUpdatedAt: changedAt,
+        })
+        .where(eq(passwordCredentials.userId, input.userId))
+        .returning({ userId: passwordCredentials.userId });
+      if (!credential) {
+        return false;
+      }
+      await revokeCredentials(tx, input.userId, changedAt);
+      return true;
+    });
+  }
+
+  async completePasswordReset(input: CompletePasswordResetInput): Promise<boolean> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ user: users, credentialUserId: passwordCredentials.userId })
+        .from(authActionTokens)
+        .innerJoin(users, eq(users.id, authActionTokens.userId))
+        .innerJoin(passwordCredentials, eq(passwordCredentials.userId, users.id))
+        .where(and(
+          eq(authActionTokens.tokenHash, input.tokenHash),
+          eq(authActionTokens.purpose, "password_reset"),
+          isNull(authActionTokens.usedAt),
+          gt(authActionTokens.expiresAt, now),
+          eq(users.status, "active"),
+          isNotNull(users.emailVerifiedAt),
+        ))
+        .for("update", { of: [authActionTokens, users, passwordCredentials] })
+        .limit(1);
+      if (!row) {
+        return false;
+      }
+
+      const [updatedCredential] = await tx
+        .update(passwordCredentials)
+        .set({ passwordHash: input.passwordHash, passwordUpdatedAt: usedAt })
+        .where(eq(passwordCredentials.userId, row.user.id))
+        .returning({ userId: passwordCredentials.userId });
+      if (!updatedCredential) {
+        throw new Error("Password reset credential update failed.");
+      }
+
+      await tx.update(authActionTokens).set({ usedAt }).where(and(
+        eq(authActionTokens.userId, row.user.id),
+        eq(authActionTokens.purpose, "password_reset"),
+        isNull(authActionTokens.usedAt),
+      ));
+      await revokeCredentials(tx, row.user.id, usedAt);
+      return true;
+    });
   }
 
   async createAuthActionToken(input: CreateAuthActionTokenInput): Promise<AuthActionTokenRecord> {
@@ -377,6 +520,68 @@ export class PostgresAuthStore implements AuthStore {
     }
     const user = await this.findUserById(token.userId);
     return user ? { ...toAuthActionTokenRecord(token), user } : null;
+  }
+
+  async completeEmailChangeAndRevokeCredentials(input: CompleteEmailChangeInput): Promise<CompleteEmailChangeResult | null> {
+    const now = input.now ?? new Date();
+    const usedAt = input.usedAt ?? now;
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ token: authActionTokens, user: users })
+        .from(authActionTokens)
+        .innerJoin(users, eq(users.id, authActionTokens.userId))
+        .where(and(
+          eq(authActionTokens.tokenHash, input.tokenHash),
+          eq(authActionTokens.purpose, "email_change"),
+          isNull(authActionTokens.usedAt),
+          gt(authActionTokens.expiresAt, now),
+          eq(users.status, "active"),
+          isNotNull(users.emailVerifiedAt),
+        ))
+        .for("update", { of: [authActionTokens, users] })
+        .limit(1);
+      if (!row) {
+        return null;
+      }
+
+      const nextEmail = row.token.sentToNormalizedEmail;
+      const [existing] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.normalizedEmail, nextEmail), ne(users.id, row.user.id)))
+        .limit(1);
+      if (existing) {
+        return { outcome: "email_in_use" };
+      }
+
+      const [updated] = await tx
+        .update(users)
+        .set({
+          email: nextEmail,
+          normalizedEmail: nextEmail,
+          emailVerifiedAt: usedAt,
+          updatedAt: usedAt,
+        })
+        .where(eq(users.id, row.user.id))
+        .returning();
+      if (!updated) {
+        throw new Error("Email change user update failed.");
+      }
+      const [consumed] = await tx
+        .update(authActionTokens)
+        .set({ usedAt })
+        .where(and(eq(authActionTokens.id, row.token.id), isNull(authActionTokens.usedAt)))
+        .returning({ id: authActionTokens.id });
+      if (!consumed) {
+        throw new Error("Email change token consumption failed.");
+      }
+      await revokeCredentials(tx, row.user.id, usedAt);
+      return {
+        outcome: "changed",
+        previousEmail: row.user.email,
+        user: { ...toRecord(updated), roles: await rolesForUser(tx, updated.id) },
+      };
+    });
   }
 
   async countActiveOwnersExcluding(userId: string): Promise<number> {
@@ -443,15 +648,9 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   async revokeUserCredentials(userId: string): Promise<void> {
-    const now = new Date();
-    await this.db
-      .update(authSessions)
-      .set({ revokedAt: now })
-      .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)));
-    await this.db
-      .update(apiTokens)
-      .set({ revokedAt: now })
-      .where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+    await this.db.transaction(async (tx) => {
+      await revokeCredentials(tx, userId, new Date());
+    });
   }
 
   async createApiToken(input: CreateApiTokenInput): Promise<ApiTokenRecord> {
@@ -688,6 +887,24 @@ export class PostgresAuthStore implements AuthStore {
     return rows.length;
   }
 
+  async disableMfaAndRevokeCredentials(input: DisableMfaAndRevokeCredentialsInput): Promise<number> {
+    const disabledAt = input.disabledAt ?? new Date();
+    return this.db.transaction(async (tx) => {
+      const disabled = await tx
+        .update(mfaFactors)
+        .set({
+          status: "disabled",
+          disabledAt,
+          updatedAt: disabledAt,
+        })
+        .where(and(eq(mfaFactors.userId, input.userId), ne(mfaFactors.status, "disabled")))
+        .returning({ id: mfaFactors.id });
+      await tx.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, input.userId));
+      await revokeCredentials(tx, input.userId, disabledAt);
+      return disabled.length;
+    });
+  }
+
   async disableOtherMfaTotpFactorsForUser(input: { userId: string; factorId: string; disabledAt?: Date }): Promise<number> {
     const disabledAt = input.disabledAt ?? new Date();
     const rows = await this.db
@@ -818,12 +1035,7 @@ export class PostgresAuthStore implements AuthStore {
   }
 
   private async rolesForUser(userId: string): Promise<Role[]> {
-    const rows = await this.db
-      .select({ role: roleAssignments.role })
-      .from(roleAssignments)
-      .where(eq(roleAssignments.userId, userId));
-    const assignedRoles = new Set(rows.map((row) => row.role));
-    return authRoles.filter((role) => assignedRoles.has(role));
+    return rolesForUser(this.db, userId);
   }
 
   private async providerRoleMappingsForConfig(providerConfigId: string): Promise<ProviderRoleMappingRecord[]> {
@@ -843,6 +1055,28 @@ export class PostgresAuthStore implements AuthStore {
       }))
       .sort(compareProviderRoleMappings);
   }
+}
+
+type DbLike = Database | Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+async function revokeCredentials(db: DbLike, userId: string, revokedAt: Date): Promise<void> {
+  await db
+    .update(authSessions)
+    .set({ revokedAt })
+    .where(and(eq(authSessions.userId, userId), isNull(authSessions.revokedAt)));
+  await db
+    .update(apiTokens)
+    .set({ revokedAt })
+    .where(and(eq(apiTokens.userId, userId), isNull(apiTokens.revokedAt)));
+}
+
+async function rolesForUser(db: DbLike, userId: string): Promise<Role[]> {
+  const rows = await db
+    .select({ role: roleAssignments.role })
+    .from(roleAssignments)
+    .where(eq(roleAssignments.userId, userId));
+  const assignedRoles = new Set(rows.map((row) => row.role));
+  return authRoles.filter((role) => assignedRoles.has(role));
 }
 
 function toMfaTotpFactorRecord(factor: typeof mfaFactors.$inferSelect): MfaTotpFactorRecord {

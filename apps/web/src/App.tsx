@@ -2,7 +2,9 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
 import {
@@ -15,6 +17,7 @@ import {
   ClipboardList,
   Copy,
   Download,
+  Ellipsis,
   FileCode2,
   Fingerprint,
   KeyRound,
@@ -68,6 +71,7 @@ import {
   type RegistryClient,
   type ReleaseMetadata,
   type ReleaseLifecycleActionName,
+  type RegistrationInvitation,
   type ReviewActionResult,
   type ReviewActionName,
   type ReviewSubmissionSummary,
@@ -86,10 +90,9 @@ interface RegistryAppProps {
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type AuthState = "idle" | "loading" | "mfa";
-type AppView = "landing" | "login" | "reset-password" | "verify-email" | "change-email" | "browse" | "admin" | "review" | "submit" | "teams" | "settings";
+type AppView = "landing" | "login" | "register" | "reset-password" | "verify-email" | "change-email" | "browse" | "admin" | "review" | "submit" | "teams" | "settings" | "not-found";
 
 interface WebSession {
-  token: string;
   expiresAt: string;
   user: WebAuthUser;
 }
@@ -109,6 +112,17 @@ interface ProviderDraft {
   roleMappings: ProviderRoleMappingInput[];
 }
 
+interface ConfirmationRequest {
+  key: string;
+  title: string;
+  description: string;
+  confirmLabel: string;
+  destructive?: boolean;
+  initialReason?: string;
+  requireReason?: boolean;
+  onConfirm: (reason: string) => Promise<void>;
+}
+
 const API_TOKEN_SCOPE_OPTIONS: Array<{ scope: ApiTokenScope; label: string }> = [
   { scope: "profile:read", label: "Profile" },
   { scope: "skills:read", label: "Read skills" },
@@ -118,16 +132,16 @@ const API_TOKEN_SCOPE_OPTIONS: Array<{ scope: ApiTokenScope; label: string }> = 
 ];
 
 export function RegistryApp({ client }: RegistryAppProps) {
-  const initialSlug = skillSlugFromPath(window.location.pathname);
-  const [view, setView] = useState<AppView>(initialViewFromPath(window.location.pathname));
+  const initialLocation = appLocationFromWindow();
+  const [view, setView] = useState<AppView>(initialLocation.view);
   const [session, setSession] = useState<WebSession | null>(() => readStoredSession());
-  const registryClient = useMemo(() => client ?? createRegistryClient(undefined, undefined, session?.token), [client, session?.token]);
-  const [query, setQuery] = useState("");
+  const registryClient = useMemo(() => client ?? createRegistryClient(), [client]);
+  const [query, setQuery] = useState(initialLocation.query);
   const [skills, setSkills] = useState<PublicSkill[]>([]);
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialSlug);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialLocation.slug);
   const [selectedSkill, setSelectedSkill] = useState<PublicSkill | null>(null);
   const [release, setRelease] = useState<ReleaseMetadata | null>(null);
-  const [platform, setPlatform] = useState("codex");
+  const [platform, setPlatform] = useState(initialLocation.platform);
   const [listState, setListState] = useState<LoadState>("idle");
   const [detailState, setDetailState] = useState<LoadState>("idle");
   const [listMessage, setListMessage] = useState<string | null>(null);
@@ -137,6 +151,9 @@ export function RegistryApp({ client }: RegistryAppProps) {
   const [authState, setAuthState] = useState<AuthState>("idle");
   const [mfaPending, setMfaPending] = useState<MfaPending | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const mobileMoreButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileMoreMenuRef = useRef<HTMLDivElement>(null);
   const canUseAdmin = Boolean(session && isAdminUser(session.user));
   const canUseReview = Boolean(session && isReviewerUser(session.user));
   const canUseSubmit = Boolean(session && isSubmitterUser(session.user));
@@ -158,16 +175,68 @@ export function RegistryApp({ client }: RegistryAppProps) {
               : "browse";
 
   useEffect(() => {
+    function syncFromBrowserHistory() {
+      const next = appLocationFromWindow();
+      setView(next.view);
+      setSelectedSlug(next.slug);
+      setQuery(next.query);
+      setPlatform(next.platform);
+      setMobileMoreOpen(false);
+    }
+    window.addEventListener("popstate", syncFromBrowserHistory);
+    return () => window.removeEventListener("popstate", syncFromBrowserHistory);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileMoreOpen) {
+      return;
+    }
+    mobileMoreMenuRef.current?.querySelector<HTMLElement>("a[href]")?.focus();
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      event.preventDefault();
+      setMobileMoreOpen(false);
+      queueMicrotask(() => mobileMoreButtonRef.current?.focus());
+    }
+    function closeOnOutsideClick(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof window.Node)) {
+        return;
+      }
+      if (!mobileMoreMenuRef.current?.contains(target) && !mobileMoreButtonRef.current?.contains(target)) {
+        setMobileMoreOpen(false);
+      }
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => {
+      window.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("mousedown", closeOnOutsideClick);
+    };
+  }, [mobileMoreOpen]);
+
+  useEffect(() => {
     if (!session && !isPublicView(view)) {
       setView("login");
       window.history.replaceState({}, "", "/login");
+      return;
+    }
+    if (session && view !== activeView) {
+      setView(activeView);
+      window.history.replaceState(
+        {},
+        "",
+        activeView === "browse" ? browseUrl(selectedSlug, query, platform) : pathForView(activeView),
+      );
       return;
     }
     if (session && view === "login") {
       setView("browse");
       window.history.replaceState({}, "", "/registry");
     }
-  }, [session, view]);
+  }, [activeView, platform, query, selectedSlug, session, view]);
 
   useEffect(() => {
     if (activeView !== "browse") {
@@ -193,7 +262,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
       return;
     }
     let active = true;
-    registryClient.getMe(session.token)
+    registryClient.getMe()
       .then((user) => {
         if (!active) {
           return;
@@ -213,7 +282,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
     return () => {
       active = false;
     };
-  }, [registryClient, session?.token]);
+  }, [registryClient, session?.expiresAt]);
 
   useEffect(() => {
     if (activeView !== "browse") {
@@ -231,12 +300,6 @@ export function RegistryApp({ client }: RegistryAppProps) {
         setSkills(result);
         setListMessage(null);
         setListState("ready");
-        setSelectedSlug((current) => {
-          if (current && result.some((skill) => skill.slug === current)) {
-            return current;
-          }
-          return result[0]?.slug ?? null;
-        });
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -251,6 +314,22 @@ export function RegistryApp({ client }: RegistryAppProps) {
       active = false;
     };
   }, [activeView, registryClient, query, refreshKey]);
+
+  useEffect(() => {
+    if (activeView !== "browse" || listState !== "ready") {
+      return;
+    }
+    const nextSlug = selectedSlug && skills.some((skill) => skill.slug === selectedSlug)
+      ? selectedSlug
+      : skills[0]?.slug ?? null;
+    if (nextSlug !== selectedSlug) {
+      setSelectedSlug(nextSlug);
+    }
+    const nextUrl = browseUrl(nextSlug, query, platform);
+    if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+      window.history.replaceState({}, "", nextUrl);
+    }
+  }, [activeView, listState, platform, query, selectedSlug, skills]);
 
   useEffect(() => {
     if (activeView !== "browse") {
@@ -278,7 +357,10 @@ export function RegistryApp({ client }: RegistryAppProps) {
         setSelectedSkill(skill);
         setRelease(nextRelease);
         setDetailMessage(null);
-        setPlatform(preferredPlatform(nextRelease?.platforms ?? skill.platforms));
+        const availablePlatforms = nextRelease?.platforms ?? skill.platforms;
+        setPlatform((current) => availablePlatforms.some((item) => item.name === current)
+          ? current
+          : preferredPlatform(availablePlatforms));
         setDetailState("ready");
       })
       .catch((error: unknown) => {
@@ -302,23 +384,24 @@ export function RegistryApp({ client }: RegistryAppProps) {
   function selectSkill(slug: string) {
     setView("browse");
     setSelectedSlug(slug);
-    window.history.replaceState({}, "", `/skills/${slug}`);
+    window.history.pushState({}, "", browseUrl(slug, query, platform));
   }
 
   function openLanding() {
     setView("landing");
-    window.history.replaceState({}, "", "/");
+    window.history.pushState({}, "", "/");
   }
 
   function openLogin() {
     setView("login");
-    window.history.replaceState({}, "", "/login");
+    window.history.pushState({}, "", "/login");
   }
 
   function openRegistry() {
     setView("browse");
-    setSelectedSlug((current) => current ?? skills[0]?.slug ?? null);
-    window.history.replaceState({}, "", "/registry");
+    const nextSlug = selectedSlug ?? skills[0]?.slug ?? null;
+    setSelectedSlug(nextSlug);
+    window.history.pushState({}, "", browseUrl(nextSlug, query, platform));
   }
 
   function retryRegistry() {
@@ -339,9 +422,8 @@ export function RegistryApp({ client }: RegistryAppProps) {
         return;
       }
       const nextSession = {
-        token: result.token,
         expiresAt: result.expiresAt,
-        user: await registryClient.getMe(result.token),
+        user: await registryClient.getMe(),
       };
       setSession(nextSession);
       writeStoredSession(nextSession);
@@ -365,9 +447,8 @@ export function RegistryApp({ client }: RegistryAppProps) {
         codeOrRecoveryCode,
       });
       const nextSession = {
-        token: result.token,
         expiresAt: result.expiresAt,
-        user: await registryClient.getMe(result.token),
+        user: await registryClient.getMe(),
       };
       setSession(nextSession);
       writeStoredSession(nextSession);
@@ -394,17 +475,16 @@ export function RegistryApp({ client }: RegistryAppProps) {
   }
 
   async function handleLogout() {
-    const token = session?.token;
     setAuthMessage(null);
     setSession(null);
     clearStoredSession();
     setMfaPending(null);
-    if (token) {
-      try {
-        await registryClient.logout(token);
-      } catch {
-        setAuthMessage("Signed out locally.");
-      }
+    setView("login");
+    window.history.replaceState({}, "", "/login");
+    try {
+      await registryClient.logout();
+    } catch {
+      setAuthMessage("Signed out locally.");
     }
   }
 
@@ -421,9 +501,31 @@ export function RegistryApp({ client }: RegistryAppProps) {
   function navigateTo(nextView: AppView) {
     setView(nextView);
     if (nextView === "browse") {
-      setSelectedSlug((current) => current ?? skills[0]?.slug ?? null);
+      const nextSlug = selectedSlug ?? skills[0]?.slug ?? null;
+      setSelectedSlug(nextSlug);
+      window.history.pushState({}, "", browseUrl(nextSlug, query, platform));
+    } else {
+      window.history.pushState({}, "", pathForView(nextView));
     }
-    window.history.replaceState({}, "", pathForView(nextView));
+    setMobileMoreOpen(false);
+  }
+
+  function handleAppLink(event: ReactMouseEvent<HTMLAnchorElement>, nextView: AppView) {
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    navigateTo(nextView);
+  }
+
+  function updateSearch(nextQuery: string) {
+    setQuery(nextQuery);
+    window.history.replaceState({}, "", browseUrl(selectedSlug, nextQuery, platform));
+  }
+
+  function updatePlatform(nextPlatform: string) {
+    setPlatform(nextPlatform);
+    window.history.replaceState({}, "", browseUrl(selectedSlug, query, nextPlatform));
   }
 
   if (activeView === "landing") {
@@ -435,6 +537,16 @@ export function RegistryApp({ client }: RegistryAppProps) {
       <AuthTokenPage
         client={registryClient}
         kind="reset-password"
+        onHome={openLanding}
+        onLogin={openLogin}
+      />
+    );
+  }
+
+  if (activeView === "register") {
+    return (
+      <InvitationRegistrationPage
+        client={registryClient}
         onHome={openLanding}
         onLogin={openLogin}
       />
@@ -466,25 +578,32 @@ export function RegistryApp({ client }: RegistryAppProps) {
     );
   }
 
+  if (activeView === "not-found") {
+    return <NotFoundPage onHome={openLanding} />;
+  }
+
   const navItems = [
     { view: "browse" as const, label: "Registry", icon: <Boxes size={18} aria-hidden="true" />, enabled: true },
     { view: "submit" as const, label: "Submit", icon: <Upload size={18} aria-hidden="true" />, enabled: canUseSubmit },
     { view: "review" as const, label: "Review", icon: <ClipboardList size={18} aria-hidden="true" />, enabled: canUseReview },
     { view: "teams" as const, label: "Teams", icon: <UsersRound size={18} aria-hidden="true" />, enabled: canUseTeams },
     { view: "admin" as const, label: "Admin", icon: <Settings size={18} aria-hidden="true" />, enabled: canUseAdmin },
-    { view: "settings" as const, label: "Settings", icon: <UserCog size={18} aria-hidden="true" />, enabled: true },
+    { view: "settings" as const, label: "Settings", icon: <UserCog size={18} aria-hidden="true" />, enabled: Boolean(session) },
+    { view: "login" as const, label: "Login", icon: <LogIn size={18} aria-hidden="true" />, enabled: !session },
   ].filter((item) => item.enabled);
+  const mobilePrimaryItems = navItems.length > 5 ? navItems.slice(0, 4) : navItems;
+  const mobileOverflowItems = navItems.length > 5 ? navItems.slice(4) : [];
 
   return (
     <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
       <aside className="app-sidebar" aria-label="Primary navigation">
         <div className="sidebar-brand-row">
           <a className="brand" href="/registry" onClick={(event) => {
-            event.preventDefault();
-            navigateTo("browse");
+            handleAppLink(event, "browse");
           }}>
             <span className="brand-mark" aria-hidden="true">
-              <img src="/brand/myskills-mark.svg" alt="" />
+              <img src="/brand/myskills-mark.svg" alt="" width={100} height={100} />
             </span>
             <span>MySkills</span>
           </a>
@@ -497,17 +616,18 @@ export function RegistryApp({ client }: RegistryAppProps) {
         </div>
         <nav className="side-nav">
           {navItems.map((item) => (
-            <button
+            <a
+              aria-current={activeView === item.view ? "page" : undefined}
               className={activeView === item.view ? "side-nav-item active" : "side-nav-item"}
+              href={pathForView(item.view)}
               key={item.view}
-              type="button"
-              onClick={() => navigateTo(item.view)}
+              onClick={(event) => handleAppLink(event, item.view)}
               aria-label={sidebarCollapsed ? item.label : undefined}
               title={sidebarCollapsed ? item.label : undefined}
             >
               {item.icon}
               <span>{item.label}</span>
-            </button>
+            </a>
           ))}
         </nav>
         {session && (
@@ -524,20 +644,20 @@ export function RegistryApp({ client }: RegistryAppProps) {
         {activeView === "browse" && (
           <header className="app-topbar">
             <a className="mobile-brand" href="/registry" onClick={(event) => {
-              event.preventDefault();
-              navigateTo("browse");
+              handleAppLink(event, "browse");
             }}>
-              <img src="/brand/myskills-mark.svg" alt="" />
+              <img src="/brand/myskills-mark.svg" alt="" width={100} height={100} />
               <span>MySkills</span>
             </a>
             <label className="global-search" htmlFor="skill-search">
               <Search size={18} aria-hidden="true" />
               <input
                 id="skill-search"
+                aria-label="Search skills"
                 name="skill-search"
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search skills..."
+                onChange={(event) => updateSearch(event.target.value)}
+                placeholder="Search skills…"
                 autoComplete="off"
                 spellCheck={false}
               />
@@ -546,7 +666,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
           </header>
         )}
 
-        <div className="app-content">
+        <div className="app-content" id="main-content" tabIndex={-1}>
           {activeView === "review" && session ? (
             <ReviewDashboard client={registryClient} session={session} />
           ) : activeView === "submit" && session ? (
@@ -563,11 +683,12 @@ export function RegistryApp({ client }: RegistryAppProps) {
             />
           ) : (
             <main className="workspace shadcn-registry-workspace shadcn-registry-layout">
+              <h1 className="sr-only">Skill registry</h1>
               <Card className="results-panel registry-results-panel shadcn-console-card" aria-label="Skill search results">
                 <CardHeader className="panel-heading review-registry-heading shadcn-card-header">
                   <div>
                     <CardTitle>Approved registry</CardTitle>
-                    <CardDescription>{resultCountText(listState, skills.length)}</CardDescription>
+                    <CardDescription aria-live="polite">{resultCountText(listState, skills.length)}</CardDescription>
                   </div>
                   <Badge className="shadcn-review-eyebrow" variant="outline">Registry</Badge>
                 </CardHeader>
@@ -586,11 +707,12 @@ export function RegistryApp({ client }: RegistryAppProps) {
                       </div>
                     )}
                     {listState !== "loading" && listState !== "error" && skills.map((skill) => (
-                      <button
+                      <a
+                        aria-current={skill.slug === selectedSlug ? "true" : undefined}
                         className={skill.slug === selectedSlug ? "result-row review-registry-row registry-result-row selected" : "result-row review-registry-row registry-result-row"}
+                        href={browseUrl(skill.slug, query, platform)}
                         key={skill.slug}
-                        type="button"
-                        onClick={() => selectSkill(skill.slug)}
+                        onClick={(event) => handleCallbackLink(event, () => selectSkill(skill.slug))}
                       >
                         <SkillIcon slug={skill.slug} />
                         <span className="result-main review-registry-main">
@@ -600,7 +722,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
                         </span>
                         <Badge className="registry-version-badge" variant="secondary">{skill.latestVersion ?? "-"}</Badge>
                         <span className="platform-icons">{skill.platforms.slice(0, 2).map((item) => item.name).join(", ")}</span>
-                      </button>
+                      </a>
                     ))}
                     {listState === "ready" && skills.length === 0 && (
                       <div className="empty-state">
@@ -641,7 +763,7 @@ export function RegistryApp({ client }: RegistryAppProps) {
                     release={release}
                     selectedSkill={selectedSkill}
                     session={session}
-                    setPlatform={setPlatform}
+                    setPlatform={updatePlatform}
                   />
                 )}
                 {detailState !== "loading" && !selectedSkill && !detailMessage && (
@@ -659,20 +781,48 @@ export function RegistryApp({ client }: RegistryAppProps) {
         </div>
 
         <nav className="mobile-nav" aria-label="Mobile navigation">
-          {navItems.map((item) => (
+          {mobilePrimaryItems.map((item) => (
             <a
+              aria-current={activeView === item.view ? "page" : undefined}
               className={activeView === item.view ? "mobile-nav-item active" : "mobile-nav-item"}
               href={pathForView(item.view)}
               key={item.view}
-              onClick={(event) => {
-                event.preventDefault();
-                navigateTo(item.view);
-              }}
+              onClick={(event) => handleAppLink(event, item.view)}
             >
               {item.icon}
               <span>{item.label}</span>
             </a>
           ))}
+          {mobileOverflowItems.length > 0 && (
+            <>
+              <button
+                aria-controls="mobile-more-navigation"
+                aria-expanded={mobileMoreOpen}
+                className={mobileOverflowItems.some((item) => item.view === activeView) ? "mobile-nav-item active" : "mobile-nav-item"}
+                ref={mobileMoreButtonRef}
+                type="button"
+                onClick={() => setMobileMoreOpen((open) => !open)}
+              >
+                <Ellipsis size={18} aria-hidden="true" />
+                <span>More</span>
+              </button>
+              {mobileMoreOpen && (
+                <div className="mobile-more-menu" id="mobile-more-navigation" ref={mobileMoreMenuRef}>
+                  {mobileOverflowItems.map((item) => (
+                    <a
+                      aria-current={activeView === item.view ? "page" : undefined}
+                      href={pathForView(item.view)}
+                      key={item.view}
+                      onClick={(event) => handleAppLink(event, item.view)}
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </nav>
       </div>
     </div>
@@ -681,17 +831,21 @@ export function RegistryApp({ client }: RegistryAppProps) {
 
 function MarketingLanding({ onLogin }: { onLogin: () => void }) {
   return (
-    <main className="landing-page">
+    <>
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+    <main className="landing-page" id="main-content">
       <section className="landing-hero" aria-label="MySkills public beta landing page">
         <nav className="landing-nav" aria-label="Marketing navigation">
-          <a className="landing-brand" href="/" onClick={(event) => event.preventDefault()}>
-            <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" />
+          <a className="landing-brand" href="/">
+            <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" width={360} height={110} />
           </a>
           <div className="landing-links">
             <a href="#registry">Registry</a>
             <a href="#trust">Trust model</a>
-            <a href="#private-development">Status</a>
-            <Button className="shadcn-action-button" size="sm" type="button" onClick={onLogin}>Login</Button>
+            <a href="#beta-status">Status</a>
+            <Button asChild className="shadcn-action-button" size="sm">
+              <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>Login</a>
+            </Button>
           </div>
         </nav>
 
@@ -703,11 +857,13 @@ function MarketingLanding({ onLogin }: { onLogin: () => void }) {
               A governed registry for packaging, reviewing, publishing, and installing reusable AI agent skills across web, CLI, API, and MCP surfaces.
             </p>
             <div className="landing-actions">
-              <Button className="landing-primary shadcn-action-button" size="sm" type="button" onClick={onLogin}>
-                Login
-                <ArrowRight size={18} aria-hidden="true" />
+              <Button asChild className="landing-primary shadcn-action-button" size="sm">
+                <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>
+                  Login
+                  <ArrowRight size={18} aria-hidden="true" />
+                </a>
               </Button>
-              <a className="landing-secondary" href="#private-development">Read current status</a>
+              <a className="landing-secondary" href="#beta-status">Read current status</a>
             </div>
           </div>
           <LandingPreview />
@@ -752,7 +908,7 @@ function MarketingLanding({ onLogin }: { onLogin: () => void }) {
         </div>
       </section>
 
-      <section className="landing-band landing-status-band" id="private-development" aria-labelledby="status-heading">
+      <section className="landing-band landing-status-band" id="beta-status" aria-labelledby="status-heading">
         <div className="landing-section-heading">
           <span>Current status</span>
           <h2 id="status-heading">Public beta release is live.</h2>
@@ -760,12 +916,15 @@ function MarketingLanding({ onLogin }: { onLogin: () => void }) {
             MySkills is available for external trial use and experimental self-hosting. This hosted registry remains owner-gated while public account creation, abuse handling, and support workflows mature.
           </p>
         </div>
-        <Button className="landing-primary shadcn-action-button" size="sm" type="button" onClick={onLogin}>
-          Login
-          <ArrowRight size={18} aria-hidden="true" />
+        <Button asChild className="landing-primary shadcn-action-button" size="sm">
+          <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>
+            Login
+            <ArrowRight size={18} aria-hidden="true" />
+          </a>
         </Button>
       </section>
     </main>
+    </>
   );
 }
 
@@ -824,20 +983,21 @@ function LoginPage({
   onVerifyMfa: (codeOrRecoveryCode: string) => Promise<void>;
 }) {
   return (
-    <main className="login-page">
+    <>
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+    <main className="login-page" id="main-content">
       <nav className="login-nav" aria-label="Login navigation">
-        <a className="landing-brand" href="/" onClick={(event) => {
-          event.preventDefault();
-          onHome();
-        }}>
-          <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" />
+        <a className="landing-brand" href="/" onClick={(event) => handleCallbackLink(event, onHome)}>
+          <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" width={360} height={110} />
         </a>
-        <Button className="login-back shadcn-action-button" size="sm" type="button" variant="outline" onClick={onHome}>Public site</Button>
+        <Button asChild className="login-back shadcn-action-button" size="sm" variant="outline">
+          <a href="/" onClick={(event) => handleCallbackLink(event, onHome)}>Public site</a>
+        </Button>
       </nav>
       <section className="login-panel" aria-labelledby="login-heading">
         <p className="landing-status">Public beta. Hosted signups are closed.</p>
         <h1 id="login-heading">Login</h1>
-        <p>Use an approved owner or team account to access the private registry workspace.</p>
+        <p>Use an approved owner or team account to access the hosted beta workspace.</p>
         <AuthWidget
           authMessage={authMessage}
           authState={authState}
@@ -850,6 +1010,185 @@ function LoginPage({
         />
       </section>
     </main>
+    </>
+  );
+}
+
+function InvitationRegistrationPage({
+  client,
+  onHome,
+  onLogin,
+}: {
+  client: RegistryClient;
+  onHome: () => void;
+  onLogin: () => void;
+}) {
+  const token = useMemo(() => authActionTokenFromLocation(), []);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [state, setState] = useState<LoadState>(token ? "idle" : "error");
+  const [message, setMessage] = useState<string | null>(token ? null : "This invitation link is missing its token.");
+  const [linkInvalid, setLinkInvalid] = useState(!token);
+
+  useEffect(() => {
+    clearAuthActionTokenFromLocation();
+  }, []);
+
+  async function register() {
+    setMessage(null);
+    if (!token) {
+      setLinkInvalid(true);
+      setState("error");
+      setMessage("This invitation link is missing its token.");
+      return;
+    }
+    if (password.length < 12) {
+      setState("error");
+      setMessage("Use a password with at least 12 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setState("error");
+      setMessage("Passwords do not match.");
+      return;
+    }
+    setState("loading");
+    try {
+      await client.registerWithInvitation({
+        email,
+        password,
+        ...(name.trim() ? { name: name.trim() } : {}),
+        inviteToken: token,
+      });
+      setPassword("");
+      setConfirmPassword("");
+      setState("ready");
+      setMessage("Registration complete. You can now log in.");
+    } catch (error) {
+      setLinkInvalid(apiErrorCode(error) === "INVALID_INVITATION_TOKEN");
+      setState("error");
+      setMessage(safeAccountErrorMessage(error));
+    }
+  }
+
+  return (
+    <>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+      <main className="login-page" id="main-content">
+        <nav className="login-nav" aria-label="Registration navigation">
+          <a className="landing-brand" href="/" onClick={(event) => handleCallbackLink(event, onHome)}>
+            <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" width={360} height={110} />
+          </a>
+          <Button asChild className="login-back shadcn-action-button" size="sm" variant="outline">
+            <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>Login</a>
+          </Button>
+        </nav>
+        <section className="login-panel" aria-labelledby="invitation-registration-heading">
+          <p className="landing-status">Public beta. Invitation required.</p>
+          <h1 id="invitation-registration-heading">Complete registration</h1>
+          <p>Create the account for the email address that received this invitation.</p>
+
+          {!linkInvalid && state !== "ready" && (
+            <form className="auth-widget auth-form" onSubmit={(event) => {
+              event.preventDefault();
+              void register();
+            }}>
+              <label className="auth-field">
+                <span>Email</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="email"
+                  disabled={state === "loading"}
+                  name="email"
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                  spellCheck={false}
+                  type="email"
+                  value={email}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Name <small>(optional)</small></span>
+                <Input
+                  className="auth-input"
+                  autoComplete="name"
+                  disabled={state === "loading"}
+                  name="name"
+                  onChange={(event) => setName(event.target.value)}
+                  value={name}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Password</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="new-password"
+                  disabled={state === "loading"}
+                  minLength={12}
+                  name="password"
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={password}
+                />
+              </label>
+              <label className="auth-field">
+                <span>Confirm password</span>
+                <Input
+                  className="auth-input"
+                  autoComplete="new-password"
+                  disabled={state === "loading"}
+                  minLength={12}
+                  name="confirm-password"
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={confirmPassword}
+                />
+              </label>
+              <Button className="shadcn-action-button" disabled={state === "loading"} size="sm" type="submit">
+                <UserRound size={16} aria-hidden="true" />
+                {state === "loading" ? "Creating account…" : "Create account"}
+              </Button>
+            </form>
+          )}
+
+          {message && (
+            <div className={state === "ready" ? "success-message compact-message" : "safe-message compact-message"} role="status" aria-live="polite">
+              {message}
+            </div>
+          )}
+          {(state === "ready" || linkInvalid) && (
+            <Button asChild className="save-button shadcn-action-button" size="sm">
+              <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>
+                <LogIn size={16} aria-hidden="true" />
+                {state === "ready" ? "Continue to login" : "Return to login"}
+              </a>
+            </Button>
+          )}
+        </section>
+      </main>
+    </>
+  );
+}
+
+function NotFoundPage({ onHome }: { onHome: () => void }) {
+  return (
+    <>
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+      <main className="login-page not-found-page" id="main-content">
+        <section className="login-panel" aria-labelledby="not-found-heading">
+          <p className="landing-status">404</p>
+          <h1 id="not-found-heading">Page not found</h1>
+          <p>The address does not match a MySkills page. Return to the public site and choose a current destination.</p>
+          <Button asChild className="shadcn-action-button" size="sm">
+            <a href="/" onClick={(event) => handleCallbackLink(event, onHome)}>Return home</a>
+          </Button>
+        </section>
+      </main>
+    </>
   );
 }
 
@@ -862,11 +1201,12 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
   const [submissions, setSubmissions] = useState<UserSubmissionSummary[]>([]);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [actioningId, setActioningId] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
 
   async function refreshSubmissions() {
     setSubmissionsState("loading");
     try {
-      setSubmissions(await client.listUserSubmissions(session.token));
+      setSubmissions(await client.listUserSubmissions());
       setSubmissionsState("ready");
     } catch (error) {
       setMessage(safeSubmitErrorMessage(error));
@@ -876,7 +1216,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
 
   useEffect(() => {
     void refreshSubmissions();
-  }, [client, session.token]);
+  }, [client]);
 
   async function submitPackage() {
     setMessage(null);
@@ -902,7 +1242,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
       const submitted = await client.submitArchive({
         filename: file.name,
         contentBase64: await fileToBase64(file),
-      }, session.token);
+      });
       setResult(submitted);
       setState("ready");
       await refreshSubmissions();
@@ -916,7 +1256,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
     setMessage(null);
     setExportingId(submission.id);
     try {
-      const bundle = await client.exportUserSubmission(submission.id, session.token);
+      const bundle = await client.exportUserSubmission(submission.id);
       downloadJsonFile(`${submission.slug}-${submission.version}.myskills.json`, bundle);
     } catch (error) {
       setMessage(safeSubmitErrorMessage(error));
@@ -926,13 +1266,27 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
   }
 
   async function withdrawSubmission(submission: UserSubmissionSummary) {
+    setConfirmation({
+      key: "withdraw-submission",
+      title: "Withdraw this submission?",
+      description: "The version will leave the active review queue. Record why the author is withdrawing it.",
+      confirmLabel: "Withdraw submission",
+      destructive: true,
+      requireReason: true,
+      onConfirm: (confirmedReason) => commitSubmissionWithdrawal(submission, confirmedReason),
+    });
+  }
+
+  async function commitSubmissionWithdrawal(submission: UserSubmissionSummary, confirmedReason: string) {
     setMessage(null);
     setActioningId(submission.id);
     try {
-      await client.performSubmissionAction(submission.id, "withdraw", "Withdrawn by author", session.token);
+      await client.performSubmissionAction(submission.id, "withdraw", confirmedReason);
       await refreshSubmissions();
     } catch (error) {
-      setMessage(safeSubmitErrorMessage(error));
+      const safeMessage = safeSubmitErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     } finally {
       setActioningId(null);
     }
@@ -944,7 +1298,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
         <div>
           <Badge className="shadcn-review-eyebrow" variant="outline">Author workflow</Badge>
           <h1>Submit package</h1>
-          <p>{session.user.email} · {state === "loading" ? "uploading archive" : "author submission"}</p>
+          <p aria-live="polite">{session.user.email} · {state === "loading" ? "Uploading archive…" : "author submission"}</p>
         </div>
       </section>
 
@@ -1056,7 +1410,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
             <span className="admin-panel-icon"><PackageOpen size={18} aria-hidden="true" /></span>
             <div>
               <CardTitle>My submitted skills</CardTitle>
-              <CardDescription>{submissionsState === "loading" ? "Loading" : `${submissions.length} versions`}</CardDescription>
+              <CardDescription aria-live="polite">{submissionsState === "loading" ? "Loading…" : `${submissions.length} versions`}</CardDescription>
             </div>
           </CardHeader>
           <CardContent className="submission-list shadcn-submission-list">
@@ -1110,6 +1464,7 @@ function SubmitDashboard({ client, session }: { client: RegistryClient; session:
           </CardContent>
         </Card>
       </section>
+      {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
     </main>
   );
 }
@@ -1121,9 +1476,13 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
   const [submissions, setSubmissions] = useState<ReviewSubmissionSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  const [reviewArtifactHashes, setReviewArtifactHashes] = useState<Record<string, string>>({});
+  const [artifactLoadingId, setArtifactLoadingId] = useState<string | null>(null);
   const selected = submissions.find((submission) => submission.id === selectedId) ?? submissions[0] ?? null;
   const allowedReviewActions = selected?.allowedActions ?? fallbackReviewActions(selected);
-  const approveDisabled = !allowedReviewActions.includes("approve");
+  const selectedArtifactHash = selected ? reviewArtifactHashes[selected.id] ?? selected.approvedArtifactSha256 ?? null : null;
+  const approveDisabled = !allowedReviewActions.includes("approve") || !selectedArtifactHash;
   const requestChangesDisabled = !allowedReviewActions.includes("request-changes");
   const rejectDisabled = !allowedReviewActions.includes("reject");
   const publishDisabled = !allowedReviewActions.includes("publish");
@@ -1132,7 +1491,9 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
       ? "Resolve or document scan findings before approving or publishing."
       : selected.reviewStatus === "approved"
         ? "This submission is approved. Publish it when release notes and metadata are ready."
-        : "Approve after checking metadata, package integrity, and scan output."
+        : selectedArtifactHash
+          ? "Approve after checking metadata, package integrity, and scan output."
+          : "Download the review artifact before approving so the approval records its exact hash."
     : "";
 
   async function refreshReview() {
@@ -1140,7 +1501,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
     setMessage(null);
     setNotice(null);
     try {
-      const nextSubmissions = await client.listReviewSubmissions(session.token);
+      const nextSubmissions = await client.listReviewSubmissions();
       setSubmissions(nextSubmissions);
       setSelectedId((current) => (
         current && nextSubmissions.some((submission) => submission.id === current)
@@ -1156,14 +1517,23 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
 
   useEffect(() => {
     void refreshReview();
-  }, [client, session.token]);
+  }, [client]);
 
-  async function runReviewAction(submission: ReviewSubmissionSummary, action: ReviewActionName) {
+  async function commitReviewAction(submission: ReviewSubmissionSummary, action: ReviewActionName, confirmedReason: string) {
     setMessage(null);
     setNotice(null);
     try {
-      const result = await client.performReviewAction(submission.id, action, reason, session.token);
-      const nextSubmissions = await client.listReviewSubmissions(session.token);
+      if (action === "approve" && !selectedArtifactHash) {
+        setMessage("Download the review artifact before approving this submission.");
+        return;
+      }
+      const result = await client.performReviewAction({
+        submissionId: submission.id,
+        action,
+        reason: confirmedReason || undefined,
+        ...(action === "approve" && selectedArtifactHash ? { artifactSha256: selectedArtifactHash } : {}),
+      });
+      const nextSubmissions = await client.listReviewSubmissions();
       setSubmissions(nextSubmissions);
       setSelectedId(result.publishedAt ? nextSubmissions[0]?.id ?? null : result.id);
       setReason("");
@@ -1176,7 +1546,63 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
             : "was approved and can now be published";
       setNotice(`${submission.title} ${actionLabel}.`);
     } catch (error) {
+      const safeMessage = safeReviewErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
+    }
+  }
+
+  function requestReviewAction(submission: ReviewSubmissionSummary, action: ReviewActionName) {
+    if (action === "approve" && !selectedArtifactHash) {
+      setMessage("Download the review artifact before approving this submission.");
+      return;
+    }
+    const labels: Record<ReviewActionName, { title: string; description: string; confirmLabel: string }> = {
+      approve: {
+        title: "Approve this submission?",
+        description: "Approval records the downloaded artifact hash and moves this version toward publication.",
+        confirmLabel: "Approve submission",
+      },
+      "request-changes": {
+        title: "Request changes?",
+        description: "The author will need the recorded reason to understand what must change before another review.",
+        confirmLabel: "Request changes",
+      },
+      reject: {
+        title: "Reject this submission?",
+        description: "Rejection ends the current review path. Record why this version should not proceed.",
+        confirmLabel: "Reject submission",
+      },
+      publish: {
+        title: "Publish this release?",
+        description: "Publication makes the approved release available through registry install and export surfaces.",
+        confirmLabel: "Publish release",
+      },
+    };
+    const label = labels[action];
+    setConfirmation({
+      key: `review-${action}`,
+      ...label,
+      destructive: action === "reject",
+      initialReason: reason,
+      requireReason: action !== "approve",
+      onConfirm: (confirmedReason) => commitReviewAction(submission, action, confirmedReason),
+    });
+  }
+
+  async function downloadReviewArtifact(submission: ReviewSubmissionSummary) {
+    setMessage(null);
+    setNotice(null);
+    setArtifactLoadingId(submission.id);
+    try {
+      const bundle = await client.getReviewSubmissionBundle(submission.id);
+      setReviewArtifactHashes((current) => ({ ...current, [submission.id]: bundle.artifactSha256 }));
+      downloadJsonFile(`${submission.slug}-${submission.version}-review.myskills.json`, bundle.payload);
+      setNotice(`Review artifact downloaded. Hash ${bundle.artifactSha256.slice(0, 12)}… is ready for approval.`);
+    } catch (error) {
       setMessage(safeReviewErrorMessage(error));
+    } finally {
+      setArtifactLoadingId(null);
     }
   }
 
@@ -1186,7 +1612,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
         <div>
           <Badge className="shadcn-review-eyebrow" variant="outline">Maintainer workflow</Badge>
           <h1>Review dashboard</h1>
-          <p>{session.user.email} · {state === "loading" ? "loading queue" : `${submissions.length} awaiting action`}</p>
+          <p aria-live="polite">{session.user.email} · {state === "loading" ? "Loading queue…" : `${submissions.length} awaiting action`}</p>
         </div>
         <Button className="shadcn-action-button" size="sm" type="button" onClick={() => void refreshReview()}>
           <RotateCw size={16} aria-hidden="true" />
@@ -1202,7 +1628,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
           <CardHeader className="panel-heading review-registry-heading shadcn-card-header">
             <div>
               <CardTitle>Queue</CardTitle>
-              <CardDescription>{state === "loading" ? "Loading" : `${submissions.length} submissions`}</CardDescription>
+              <CardDescription aria-live="polite">{state === "loading" ? "Loading…" : `${submissions.length} submissions`}</CardDescription>
             </div>
             <Badge className="shadcn-review-eyebrow" variant="outline">Maintainer</Badge>
           </CardHeader>
@@ -1210,6 +1636,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
             <div className="result-list shadcn-review-list">
               {submissions.map((submission) => (
                 <button
+                  aria-pressed={selected?.id === submission.id}
                   className={selected?.id === submission.id ? "result-row review-registry-row selected" : "result-row review-registry-row"}
                   key={submission.id}
                   type="button"
@@ -1271,6 +1698,10 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                     <dd>{String(selected.findingCount)}</dd>
                   </div>
                   <div>
+                    <dt>Artifact hash</dt>
+                    <dd className="mono">{selectedArtifactHash ? `${selectedArtifactHash.slice(0, 12)}…` : "download required"}</dd>
+                  </div>
+                  <div>
                     <dt>Submitted</dt>
                     <dd>{formatDate(selected.createdAt)}</dd>
                   </div>
@@ -1294,10 +1725,21 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                   <div className="review-actions shadcn-review-actions">
                     <Button
                       className="shadcn-action-button"
+                      disabled={artifactLoadingId === selected.id}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                      onClick={() => void downloadReviewArtifact(selected)}
+                    >
+                      <Download size={16} aria-hidden="true" />
+                      Download artifact
+                    </Button>
+                    <Button
+                      className="shadcn-action-button"
                       disabled={approveDisabled}
                       size="sm"
                       type="button"
-                      onClick={() => void runReviewAction(selected, "approve")}
+                      onClick={() => requestReviewAction(selected, "approve")}
                     >
                       <Check size={16} aria-hidden="true" />
                       Approve
@@ -1307,7 +1749,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                       disabled={requestChangesDisabled}
                       size="sm"
                       type="button"
-                      onClick={() => void runReviewAction(selected, "request-changes")}
+                      onClick={() => requestReviewAction(selected, "request-changes")}
                     >
                       <RotateCw size={16} aria-hidden="true" />
                       Request changes
@@ -1318,7 +1760,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                       variant="destructive"
                       size="sm"
                       type="button"
-                      onClick={() => void runReviewAction(selected, "reject")}
+                      onClick={() => requestReviewAction(selected, "reject")}
                     >
                       <X size={16} aria-hidden="true" />
                       Reject
@@ -1329,7 +1771,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
                       variant="secondary"
                       size="sm"
                       type="button"
-                      onClick={() => void runReviewAction(selected, "publish")}
+                      onClick={() => requestReviewAction(selected, "publish")}
                     >
                       <PackageOpen size={16} aria-hidden="true" />
                       Publish
@@ -1348,6 +1790,7 @@ function ReviewDashboard({ client, session }: { client: RegistryClient; session:
           )}
         </Card>
       </section>
+      {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
     </main>
   );
 }
@@ -1357,7 +1800,7 @@ function fallbackReviewActions(submission: ReviewSubmissionSummary | null): Revi
     return [];
   }
   if (submission.reviewStatus === "approved" && submission.securityStatus === "passed") {
-    return ["publish"];
+    return submission.approvedArtifactSha256 ? ["publish"] : [];
   }
   if (["unreviewed", "changes-requested"].includes(submission.reviewStatus)) {
     return submission.securityStatus === "passed"
@@ -1384,8 +1827,8 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     setMessage(null);
     try {
       const [nextDashboard, nextGroups] = await Promise.all([
-        client.listTeams(session.token),
-        client.listTeamSharedSkills(session.token),
+        client.listTeams(),
+        client.listTeamSharedSkills(),
       ]);
       setDashboard(nextDashboard);
       setSharedGroups(nextGroups);
@@ -1394,7 +1837,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
       setMessage(safeTeamErrorMessage(error));
       setState("error");
     }
-  }, [client, session.token]);
+  }, [client]);
 
   useEffect(() => {
     void refreshTeams();
@@ -1406,7 +1849,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     }
     setMessage(null);
     try {
-      await client.createTeam(teamName, session.token);
+      await client.createTeam(teamName);
       setTeamName("");
       await refreshTeams();
     } catch (error) {
@@ -1421,7 +1864,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
     }
     setMessage(null);
     try {
-      await client.inviteTeamMember(team.id, email, session.token);
+      await client.inviteTeamMember(team.id, email);
       setInviteEmails((current) => ({ ...current, [team.id]: "" }));
       await refreshTeams();
     } catch (error) {
@@ -1432,7 +1875,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
   async function acceptInvitation(invitation: TeamInvitation) {
     setMessage(null);
     try {
-      await client.acceptTeamInvitation(invitation.id, session.token);
+      await client.acceptTeamInvitation(invitation.id);
       await refreshTeams();
     } catch (error) {
       setMessage(safeTeamErrorMessage(error));
@@ -1444,7 +1887,7 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
       <section className="admin-hero teams-hero shadcn-teams-hero" aria-labelledby="teams-heading">
         <div>
           <h1 id="teams-heading">Teams</h1>
-          <p>{session.user.email} · {state === "loading" ? "refreshing team access" : `${teamCount} teams`}</p>
+          <p aria-live="polite">{session.user.email} · {state === "loading" ? "Refreshing team access…" : `${teamCount} teams`}</p>
         </div>
         <div className="teams-hero-actions">
           <dl className="teams-header-metrics" aria-label="Team summary">
@@ -1656,7 +2099,8 @@ function TeamsDashboard({ client, session }: { client: RegistryClient; session: 
 
 function TeamsLoadingRows() {
   return (
-    <div className="teams-loading-list" aria-label="Loading teams">
+    <div className="teams-loading-list" role="status" aria-live="polite">
+      <span className="sr-only">Loading teams…</span>
       <span className="loading-row" />
       <span className="loading-row short" />
       <span className="loading-row" />
@@ -1703,12 +2147,18 @@ function TeamSkillList({ skills, title }: { skills: PublicSkill[]; title: string
 function AdminConsole({ client, session }: { client: RegistryClient; session: WebSession }) {
   const [state, setState] = useState<LoadState>("loading");
   const [message, setMessage] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [registrationMode, setRegistrationMode] = useState<AdminRegistrationMode>("closed");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [apiTokens, setApiTokens] = useState<AdminApiToken[]>([]);
   const [providers, setProviders] = useState<AdminProviderConfig[]>([]);
   const [auditEvents, setAuditEvents] = useState<AdminAuditEvent[]>([]);
   const [draft, setDraft] = useState<ProviderDraft>(() => emptyProviderDraft());
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteName, setInviteName] = useState("");
+  const [inviteState, setInviteState] = useState<LoadState>("idle");
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [invitation, setInvitation] = useState<RegistrationInvitation | null>(null);
   const sessionCanEditPrivilegedRoles = session.user.roles.includes("owner");
   const adminInitialLoading = state === "loading" && users.length === 0 && apiTokens.length === 0 && providers.length === 0 && auditEvents.length === 0;
 
@@ -1717,11 +2167,11 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
     setMessage(null);
     try {
       const [registration, nextUsers, nextApiTokens, nextProviders, nextAuditEvents] = await Promise.all([
-        client.getAdminRegistration(session.token),
-        client.listAdminUsers(session.token),
-        client.listAdminApiTokens(session.token),
-        client.listAdminProviders(session.token),
-        client.listAdminAudit(25, session.token),
+        client.getAdminRegistration(),
+        client.listAdminUsers(),
+        client.listAdminApiTokens(),
+        client.listAdminProviders(),
+        client.listAdminAudit(25),
       ]);
       setRegistrationMode(registration.mode);
       setUsers(nextUsers);
@@ -1738,64 +2188,143 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
 
   useEffect(() => {
     void refreshAdmin();
-  }, [client, session.token]);
+  }, [client]);
 
   async function updateRegistration(mode: AdminRegistrationMode) {
     setMessage(null);
-    if (
-      mode === "open"
-      && registrationMode !== "open"
-      && !window.confirm("Open registration? This allows new accounts to sign up without an owner approving each request first.")
-    ) {
+    if (mode === "open" && registrationMode !== "open") {
+      setConfirmation({
+        key: "open-registration",
+        title: "Open public registration?",
+        description: "New accounts will be able to sign up without an owner approving each request first.",
+        confirmLabel: "Open registration",
+        onConfirm: async () => applyRegistration(mode),
+      });
       return;
     }
     try {
-      const registration = await client.updateAdminRegistration(mode, session.token);
+      await applyRegistration(mode);
+    } catch {
+      // The safe error is already rendered by applyRegistration.
+    }
+  }
+
+  async function applyRegistration(mode: AdminRegistrationMode) {
+    try {
+      const registration = await client.updateAdminRegistration(mode);
       setRegistrationMode(registration.mode);
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
-      setMessage(safeAdminErrorMessage(error));
+      const safeMessage = safeAdminErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
+    }
+  }
+
+  async function createInvitation() {
+    setInviteMessage(null);
+    setInvitation(null);
+    setInviteState("loading");
+    try {
+      const created = await client.createRegistrationInvitation({
+        email: inviteEmail,
+        ...(inviteName.trim() ? { name: inviteName.trim() } : {}),
+      });
+      setInvitation(created);
+      setInviteEmail("");
+      setInviteName("");
+      setInviteState("ready");
+      setAuditEvents(await client.listAdminAudit(25));
+    } catch (error) {
+      setInviteState("error");
+      setInviteMessage(safeAdminErrorMessage(error));
     }
   }
 
   async function performUserAction(userId: string, action: "approve" | "activate" | "disable" | "delete") {
     setMessage(null);
-    const confirmationMessage = action === "disable"
-      ? "Disable this user? They will lose access until reactivated."
-      : action === "delete"
-        ? "Delete this user? This removes access and cannot be undone from this screen."
-        : null;
-    if (confirmationMessage && !window.confirm(confirmationMessage)) {
+    if (action === "disable" || action === "delete") {
+      setConfirmation({
+        key: `${action}-user`,
+        title: action === "delete" ? "Delete this user?" : "Disable this user?",
+        description: action === "delete"
+          ? "This removes account access and cannot be undone from this screen."
+          : "The user will lose access until an administrator reactivates the account.",
+        confirmLabel: action === "delete" ? "Delete user" : "Disable user",
+        destructive: true,
+        initialReason: "",
+        requireReason: true,
+        onConfirm: (confirmedReason) => applyUserAction(userId, action, confirmedReason),
+      });
       return;
     }
     try {
-      const updated = await client.performAdminUserAction(userId, action, session.token);
+      await applyUserAction(userId, action);
+    } catch {
+      // The safe error is already rendered by applyUserAction.
+    }
+  }
+
+  async function applyUserAction(userId: string, action: "approve" | "activate" | "disable" | "delete", reason?: string) {
+    try {
+      const updated = await client.performAdminUserAction(userId, action, reason);
       setUsers((current) => current.map((user) => user.id === updated.id ? updated : user));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
-      setMessage(safeAdminErrorMessage(error));
+      const safeMessage = safeAdminErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
   async function updateUserRoles(userId: string, roles: string[]) {
     setMessage(null);
+    const user = users.find((item) => item.id === userId);
+    setConfirmation({
+      key: "change-user-roles",
+      title: `Change roles for ${user?.email ?? "this user"}?`,
+      description: `Access will change from ${(user?.roles ?? []).join(", ") || "no roles"} to ${roles.join(", ") || "no roles"}.`,
+      confirmLabel: "Save role change",
+      initialReason: "",
+      requireReason: true,
+      onConfirm: (confirmedReason) => applyUserRoles(userId, roles, confirmedReason),
+    });
+  }
+
+  async function applyUserRoles(userId: string, roles: string[], reason: string) {
     try {
-      const updated = await client.updateAdminUserRoles(userId, roles, session.token);
+      const updated = await client.updateAdminUserRoles(userId, roles, reason);
       setUsers((current) => current.map((user) => user.id === updated.id ? updated : user));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
-      setMessage(safeAdminErrorMessage(error));
+      const safeMessage = safeAdminErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
   async function revokeAdminToken(tokenId: string) {
     setMessage(null);
+    const token = apiTokens.find((item) => item.id === tokenId);
+    setConfirmation({
+      key: "revoke-admin-token",
+      title: "Revoke this API key?",
+      description: `${token?.name ?? "This key"} will stop working immediately for its current user and scopes.`,
+      confirmLabel: "Revoke key",
+      destructive: true,
+      onConfirm: async () => applyAdminTokenRevocation(tokenId),
+    });
+  }
+
+  async function applyAdminTokenRevocation(tokenId: string) {
     try {
-      const token = await client.revokeAdminApiToken(tokenId, session.token);
+      const token = await client.revokeAdminApiToken(tokenId);
       setApiTokens((current) => current.map((item) => item.id === token.id ? token : item));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
-      setMessage(safeAdminErrorMessage(error));
+      const safeMessage = safeAdminErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
@@ -1809,10 +2338,10 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
         clientId: optionalDraftValue(draft.clientId),
         enabled: draft.enabled,
         roleMappings: draft.roleMappings.filter((mapping) => mapping.claim.trim() && mapping.value.trim()),
-      }, session.token);
+      });
       setProviders((current) => upsertProvider(current, provider));
       setDraft(providerToDraft(provider));
-      setAuditEvents(await client.listAdminAudit(25, session.token));
+      setAuditEvents(await client.listAdminAudit(25));
     } catch (error) {
       setMessage(safeAdminErrorMessage(error));
     }
@@ -1824,7 +2353,7 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
         <div>
           <Badge className="shadcn-review-eyebrow" variant="outline">Owner workflow</Badge>
           <h1 id="admin-console-heading">Admin console</h1>
-          <p>{session.user.email} · {adminInitialLoading ? "loading accounts" : `${users.length} accounts`}</p>
+          <p aria-live="polite">{session.user.email} · {adminInitialLoading ? "Loading accounts…" : `${users.length} accounts`}</p>
         </div>
         <Button className="shadcn-action-button" size="sm" type="button" variant="outline" onClick={() => void refreshAdmin()}>
           <RotateCw size={16} aria-hidden="true" />
@@ -1838,7 +2367,7 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
         <AdminPanel
           icon={<Settings size={18} aria-hidden="true" />}
           title="Registration"
-          meta={state === "loading" ? "Loading" : registrationMode}
+          meta={state === "loading" ? "Loading…" : registrationMode}
         >
           {adminInitialLoading ? (
             <LoadingRows />
@@ -1864,6 +2393,52 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
               <p className="admin-guidance">
                 Use request mode for controlled beta access. Open registration is intentionally guarded until public onboarding and abuse handling are ready.
               </p>
+              {session.user.mfaVerified ? (
+                <form className="provider-form admin-invite-form" aria-label="Invite user" onSubmit={(event) => {
+                  event.preventDefault();
+                  void createInvitation();
+                }}>
+                  <label>
+                    Email
+                    <input
+                      autoComplete="email"
+                      disabled={inviteState === "loading"}
+                      name="invitation-email"
+                      onChange={(event) => setInviteEmail(event.target.value)}
+                      required
+                      spellCheck={false}
+                      type="email"
+                      value={inviteEmail}
+                    />
+                  </label>
+                  <label>
+                    Name <small>(optional)</small>
+                    <input
+                      autoComplete="name"
+                      disabled={inviteState === "loading"}
+                      name="invitation-name"
+                      onChange={(event) => setInviteName(event.target.value)}
+                      value={inviteName}
+                    />
+                  </label>
+                  <Button className="save-button shadcn-action-button" disabled={inviteState === "loading"} size="sm" type="submit">
+                    <Mail size={16} aria-hidden="true" />
+                    {inviteState === "loading" ? "Sending invitation…" : "Send invitation"}
+                  </Button>
+                  {invitation && (
+                    <div className="success-message compact-message admin-invite-message" role="status" aria-live="polite">
+                      Invitation sent to {invitation.email}. It expires {formatDate(invitation.expiresAt)}.
+                    </div>
+                  )}
+                  {inviteMessage && (
+                    <div className="safe-message compact-message admin-invite-message" role="status" aria-live="polite">{inviteMessage}</div>
+                  )}
+                </form>
+              ) : (
+                <div className="safe-message compact-message" role="status">
+                  Sign in with MFA before sending registration invitations.
+                </div>
+              )}
             </>
           )}
         </AdminPanel>
@@ -1941,7 +2516,7 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
               <div className="token-row admin-token-row" key={token.id}>
                 <span className="cell-main">
                   <strong>{token.name}</strong>
-                  <small>{token.user.email} · {token.tokenPrefix}...</small>
+                  <small>{token.user.email} · {token.tokenPrefix}…</small>
                 </span>
                 <StatusToken value={token.revokedAt ? "revoked" : "active"} />
                 <span className="admin-token-scopes">{token.scopes.join(", ")}</span>
@@ -2104,6 +2679,7 @@ function AdminConsole({ client, session }: { client: RegistryClient; session: We
           </div>
         </AdminPanel>
       </section>
+      {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
     </main>
   );
 }
@@ -2145,13 +2721,19 @@ function SidebarAccount({
 }) {
   return (
     <div className={collapsed ? "sidebar-account collapsed" : "sidebar-account"}>
-      <button className="sidebar-account-main" type="button" aria-label="Account settings" onClick={onSettings} title={session.user.email}>
+      <a className="sidebar-account-main" href="/settings" aria-label="Account settings" onClick={(event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+          return;
+        }
+        event.preventDefault();
+        onSettings();
+      }} title={session.user.email}>
         <UserRound size={18} aria-hidden="true" />
         <span>
           <strong>{session.user.email}</strong>
           <small>{session.user.roles.join(", ") || "user"} · {session.user.mfaVerified ? "MFA verified" : "MFA pending"}</small>
         </span>
-      </button>
+      </a>
       <IconButton label="Sign out" onClick={() => void onLogout()}>
         <LogOut size={15} aria-hidden="true" />
       </IconButton>
@@ -2249,15 +2831,16 @@ function AuthTokenPage({
       : "Confirm email change";
 
   return (
-    <main className="login-page">
+    <>
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+    <main className="login-page" id="main-content">
       <nav className="login-nav" aria-label="Account action navigation">
-        <a className="landing-brand" href="/" onClick={(event) => {
-          event.preventDefault();
-          onHome();
-        }}>
-          <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" />
+        <a className="landing-brand" href="/" onClick={(event) => handleCallbackLink(event, onHome)}>
+          <img src="/brand/myskills-logo-horizontal.svg" alt="MySkills" width={360} height={110} />
         </a>
-        <Button className="login-back shadcn-action-button" size="sm" type="button" variant="outline" onClick={onLogin}>Login</Button>
+        <Button asChild className="login-back shadcn-action-button" size="sm" variant="outline">
+          <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>Login</a>
+        </Button>
       </nav>
       <section className="login-panel" aria-labelledby="auth-token-heading">
         <p className="landing-status">Public beta. Account action required.</p>
@@ -2298,18 +2881,21 @@ function AuthTokenPage({
           </form>
         ) : (
           <div className={state === "error" ? "safe-message compact-message" : "success-message compact-message"} role="status" aria-live="polite">
-            {state === "loading" ? "Confirming link..." : message}
+            {state === "loading" ? "Confirming link…" : message}
           </div>
         )}
         {kind === "reset-password" && <AuthMessage message={message} />}
         {state === "ready" && (
-          <Button className="save-button shadcn-action-button" size="sm" type="button" onClick={onLogin}>
-            <LogIn size={16} aria-hidden="true" />
-            Login
+          <Button asChild className="save-button shadcn-action-button" size="sm">
+            <a href="/login" onClick={(event) => handleCallbackLink(event, onLogin)}>
+              <LogIn size={16} aria-hidden="true" />
+              Login
+            </a>
           </Button>
         )}
       </section>
     </main>
+    </>
   );
 }
 
@@ -2336,13 +2922,16 @@ function AccountSettings({
   const [apiTokenName, setApiTokenName] = useState("");
   const [apiTokenScopes, setApiTokenScopes] = useState<ApiTokenScope[]>(["skills:read"]);
   const [apiTokenExpiresAt, setApiTokenExpiresAt] = useState("");
+  const [apiTokenExpiryError, setApiTokenExpiryError] = useState<string | null>(null);
   const [createdApiToken, setCreatedApiToken] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
+  const tokenExpiryBounds = useMemo(() => apiTokenExpiryBounds(), []);
 
   async function refreshAccountSecurity() {
     try {
       const [nextMfaStatus, nextApiTokens] = await Promise.all([
-        client.getMfaStatus(session.token),
-        client.listApiTokens(session.token),
+        client.getMfaStatus(),
+        client.listApiTokens(),
       ]);
       setMfaStatus(nextMfaStatus);
       setApiTokens(nextApiTokens);
@@ -2355,7 +2944,7 @@ function AccountSettings({
 
   useEffect(() => {
     void refreshAccountSecurity();
-  }, [client, session.token]);
+  }, [client]);
 
   async function submitPasswordChange(input?: { currentPassword: string; password: string; confirmPassword: string }) {
     setMessage(null);
@@ -2370,7 +2959,7 @@ function AccountSettings({
     }
     setState("loading");
     try {
-      await client.changePassword({ currentPassword: passwordInput.currentPassword, password: passwordInput.password }, session.token);
+      await client.changePassword({ currentPassword: passwordInput.currentPassword, password: passwordInput.password });
       onSessionInvalidated("Password changed. Sign in again with the new password.");
     } catch (error) {
       setState("error");
@@ -2383,7 +2972,7 @@ function AccountSettings({
     setState("loading");
     try {
       const emailInput = input ?? { email, password: emailPassword };
-      await client.requestEmailChange({ email: emailInput.email, password: emailInput.password }, session.token);
+      await client.requestEmailChange({ email: emailInput.email, password: emailInput.password });
       setEmail("");
       setEmailPassword("");
       setState("ready");
@@ -2394,30 +2983,50 @@ function AccountSettings({
     }
   }
 
-  async function removeMfa(passwordOverride?: string) {
+  function requestMfaRemoval(password: string) {
+    setConfirmation({
+      key: "remove-mfa",
+      title: "Remove MFA from this account?",
+      description: "This weakens sign-in protection and ends the current session. You will need to sign in again.",
+      confirmLabel: "Remove MFA",
+      destructive: true,
+      onConfirm: async () => removeMfa(password),
+    });
+  }
+
+  async function removeMfa(password: string) {
     setMessage(null);
     setState("loading");
     try {
-      await client.disableTotpMfa({ password: passwordOverride ?? mfaPassword }, session.token);
+      await client.disableTotpMfa({ password });
       onSessionInvalidated("MFA removed. Sign in again to continue.");
     } catch (error) {
       setState("error");
-      setMessage(safeAccountErrorMessage(error));
+      const safeMessage = safeAccountErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
   async function createAccountApiToken() {
     setMessage(null);
     setCreatedApiToken(null);
+    const expiry = validateApiTokenExpiry(apiTokenExpiresAt);
+    if (!expiry.valid) {
+      setApiTokenExpiryError(expiry.message);
+      setState("ready");
+      return;
+    }
+    setApiTokenExpiryError(null);
     setState("loading");
     try {
       const token = await client.createApiToken({
         name: apiTokenName,
         scopes: apiTokenScopes,
-        expiresAt: apiTokenExpiresAt || undefined,
-      }, session.token);
+        expiresAt: expiry.iso,
+      });
       setCreatedApiToken(token.token);
-      setApiTokens(await client.listApiTokens(session.token));
+      setApiTokens(await client.listApiTokens());
       setApiTokenName("");
       setApiTokenExpiresAt("");
       setState("ready");
@@ -2429,14 +3038,28 @@ function AccountSettings({
 
   async function revokeAccountApiToken(tokenId: string) {
     setMessage(null);
+    const token = apiTokens.find((item) => item.id === tokenId);
+    setConfirmation({
+      key: "revoke-account-token",
+      title: "Revoke this API key?",
+      description: `${token?.name ?? "This key"} will stop working immediately for all assigned scopes.`,
+      confirmLabel: "Revoke key",
+      destructive: true,
+      onConfirm: async () => applyAccountTokenRevocation(tokenId),
+    });
+  }
+
+  async function applyAccountTokenRevocation(tokenId: string) {
     setState("loading");
     try {
-      const token = await client.revokeApiToken(tokenId, session.token);
+      const token = await client.revokeApiToken(tokenId);
       setApiTokens((current) => current.map((item) => item.id === token.id ? token : item));
       setState("ready");
     } catch (error) {
       setState("error");
-      setMessage(safeAccountErrorMessage(error));
+      const safeMessage = safeAccountErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
@@ -2444,9 +3067,9 @@ function AccountSettings({
   const activeApiTokenCount = apiTokens.filter((token) => !token.revokedAt).length;
   const accountInitialLoading = state === "loading" && mfaStatus === null;
   const sessionMfaLabel = session.user.mfaVerified ? "verified" : "not verified";
-  const mfaPostureLabel = accountInitialLoading ? "Loading" : mfaEnabled ? (session.user.mfaVerified ? "MFA verified" : "MFA enabled") : "MFA not set";
-  const apiTokenCountLabel = accountInitialLoading ? "Loading" : String(activeApiTokenCount);
-  const recoveryCodeLabel = accountInitialLoading ? "Loading" : mfaEnabled ? String(mfaStatus?.recoveryCodesRemaining ?? 0) : "not issued";
+  const mfaPostureLabel = accountInitialLoading ? "Loading…" : mfaEnabled ? (session.user.mfaVerified ? "MFA verified" : "MFA enabled") : "MFA not set";
+  const apiTokenCountLabel = accountInitialLoading ? "Loading…" : String(activeApiTokenCount);
+  const recoveryCodeLabel = accountInitialLoading ? "Loading…" : mfaEnabled ? String(mfaStatus?.recoveryCodesRemaining ?? 0) : "not issued";
 
   return (
     <main className="settings-workspace shadcn-settings-workspace" aria-label="Account settings">
@@ -2492,7 +3115,7 @@ function AccountSettings({
             <Metadata label="Email status" value={session.user.emailVerified ? "verified" : "unverified"} />
             <Metadata label="MFA posture" value={mfaPostureLabel} />
             <Metadata label="Recovery codes" value={recoveryCodeLabel} />
-            <Metadata label="API access" value={accountInitialLoading ? "Loading" : `${activeApiTokenCount} active`} />
+            <Metadata label="API access" value={accountInitialLoading ? "Loading…" : `${activeApiTokenCount} active`} />
           </dl>
         </aside>
 
@@ -2608,7 +3231,7 @@ function AccountSettings({
             </form>
           </AccountPanel>
 
-          <AccountPanel icon={<ShieldCheck size={18} aria-hidden="true" />} title="MFA" meta={accountInitialLoading ? "Loading" : mfaEnabled ? `${mfaStatus?.recoveryCodesRemaining ?? 0} recovery codes` : "Authenticator app not set"}>
+          <AccountPanel icon={<ShieldCheck size={18} aria-hidden="true" />} title="MFA" meta={accountInitialLoading ? "Loading…" : mfaEnabled ? `${mfaStatus?.recoveryCodesRemaining ?? 0} recovery codes` : "Authenticator app not set"}>
             {accountInitialLoading ? (
               <LoadingRows />
             ) : (
@@ -2629,7 +3252,7 @@ function AccountSettings({
                     <form className="inline-security-form" onSubmit={(event) => {
                       event.preventDefault();
                       const formData = new window.FormData(event.currentTarget);
-                      void removeMfa(String(formData.get("mfa-removal-password") ?? ""));
+                      requestMfaRemoval(String(formData.get("mfa-removal-password") ?? ""));
                     }}>
                       <label>
                         <span>Password for MFA removal</span>
@@ -2671,9 +3294,9 @@ function AccountSettings({
             )}
           </AccountPanel>
 
-          <AccountPanel icon={<KeyRound size={18} aria-hidden="true" />} title="API keys" meta={accountInitialLoading ? "Loading" : `${activeApiTokenCount} active`}>
+          <AccountPanel icon={<KeyRound size={18} aria-hidden="true" />} title="API keys" meta={accountInitialLoading ? "Loading…" : `${activeApiTokenCount} active`}>
             <div className="settings-stack">
-              <form className="settings-form api-key-form" onSubmit={(event) => {
+              <form className="settings-form api-key-form" noValidate onSubmit={(event) => {
                 event.preventDefault();
                 void createAccountApiToken();
               }}>
@@ -2694,12 +3317,25 @@ function AccountSettings({
                   <Input
                     className="settings-input"
                     aria-label="Expires at"
+                    aria-describedby="api-token-expiry-help api-token-expiry-error"
+                    aria-invalid={Boolean(apiTokenExpiryError)}
+                    autoComplete="off"
+                    max={tokenExpiryBounds.max}
+                    min={tokenExpiryBounds.min}
                     name="api-token-expires-at"
-                    onChange={(event) => setApiTokenExpiresAt(event.target.value)}
-                    onInput={(event) => setApiTokenExpiresAt(event.currentTarget.value)}
-                    placeholder="Default: 90 days"
+                    onChange={(event) => {
+                      setApiTokenExpiresAt(event.target.value);
+                      setApiTokenExpiryError(null);
+                    }}
+                    onInput={(event) => {
+                      setApiTokenExpiresAt(event.currentTarget.value);
+                      setApiTokenExpiryError(null);
+                    }}
+                    type="datetime-local"
                     value={apiTokenExpiresAt}
                   />
+                  <small id="api-token-expiry-help">Optional. Choose a future expiry no more than 1 year away; blank uses the 90-day default.</small>
+                  {apiTokenExpiryError && <small className="field-error" id="api-token-expiry-error" role="alert">{apiTokenExpiryError}</small>}
                 </label>
                 <fieldset className="scope-grid">
                   <legend>API key scopes</legend>
@@ -2725,10 +3361,7 @@ function AccountSettings({
                 <div className="token-reveal" role="status">
                   <span>Copy this key now. It will not be shown again.</span>
                   <code>{createdApiToken}</code>
-                  <Button className="shadcn-action-button" size="sm" type="button" onClick={() => void navigator.clipboard?.writeText(createdApiToken)}>
-                    <Copy size={15} aria-hidden="true" />
-                    Copy
-                  </Button>
+                  <CopyButton text={createdApiToken} />
                 </div>
               )}
               {accountInitialLoading ? <LoadingRows /> : <TokenList tokens={apiTokens} onRevoke={(tokenId) => void revokeAccountApiToken(tokenId)} />}
@@ -2743,6 +3376,7 @@ function AccountSettings({
           </AccountPanel>
         </section>
       </div>
+      {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
     </main>
   );
 }
@@ -2787,7 +3421,7 @@ function TokenList({ tokens, onRevoke }: { tokens: ApiToken[]; onRevoke: (tokenI
         <div className="token-row" key={token.id}>
           <span className="cell-main">
             <strong>{token.name}</strong>
-            <small>{token.tokenPrefix}... · {token.scopes.join(", ")}</small>
+            <small>{token.tokenPrefix}… · {token.scopes.join(", ")}</small>
           </span>
           <StatusToken value={token.revokedAt ? "revoked" : "active"} />
           <span>Expires {formatDate(token.expiresAt)}</span>
@@ -2814,6 +3448,163 @@ function IconButton({ children, label, onClick }: { children: ReactNode; label: 
       {children}
     </button>
   );
+}
+
+function CopyButton({ text, variant }: { text: string; variant?: "outline" }) {
+  const [status, setStatus] = useState<"idle" | "copying" | "copied" | "error">("idle");
+
+  async function copy() {
+    setStatus("copying");
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable.");
+      }
+      await navigator.clipboard.writeText(text);
+      setStatus("copied");
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  return (
+    <>
+      <Button className="shadcn-action-button" disabled={status === "copying"} size="sm" type="button" variant={variant} onClick={() => void copy()}>
+        <Copy size={15} aria-hidden="true" />
+        {status === "copying" ? "Copying…" : status === "copied" ? "Copied" : "Copy"}
+      </Button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {status === "copied" ? "Copied to clipboard." : status === "error" ? "Copy failed. Select and copy the text manually." : ""}
+      </span>
+    </>
+  );
+}
+
+function ConfirmationDialog({ onClose, request }: { onClose: () => void; request: ConfirmationRequest }) {
+  const [reason, setReason] = useState(request.initialReason ?? "");
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const loadingRef = useRef(false);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof window.HTMLElement ? document.activeElement : null,
+  );
+  const showReason = request.requireReason || request.initialReason !== undefined;
+  const reasonIsValid = !request.requireReason || reason.trim().length >= 4;
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    headingRef.current?.focus();
+    function handleDialogKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !loadingRef.current) {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") {
+        return;
+      }
+      const focusable = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+        "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      ) ?? []);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !focusable.includes(active as HTMLElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !focusable.includes(active as HTMLElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener("keydown", handleDialogKeydown);
+    return () => {
+      window.removeEventListener("keydown", handleDialogKeydown);
+      document.body.style.overflow = previousOverflow;
+      restoreInteractionFocus(previouslyFocusedRef.current);
+    };
+  }, [onClose]);
+
+  async function confirm() {
+    if (!reasonIsValid) {
+      setError("Enter a specific reason of at least 4 characters.");
+      return;
+    }
+    loadingRef.current = true;
+    setStatus("loading");
+    setError(null);
+    try {
+      await request.onConfirm(reason.trim());
+      onClose();
+    } catch (nextError) {
+      loadingRef.current = false;
+      setStatus("error");
+      setError(nextError instanceof Error ? nextError.message : "The action could not be completed. Try again.");
+    }
+  }
+
+  return (
+    <div className="confirmation-backdrop" role="presentation">
+      <section className="confirmation-dialog" ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={`${request.key}-title`} aria-describedby={`${request.key}-description`}>
+        <div className="confirmation-heading">
+          <CircleAlert size={22} aria-hidden="true" />
+          <div>
+            <h2 id={`${request.key}-title`} ref={headingRef} tabIndex={-1}>{request.title}</h2>
+            <p id={`${request.key}-description`}>{request.description}</p>
+          </div>
+        </div>
+        {showReason && (
+          <div className="confirmation-reason">
+            <label htmlFor={`${request.key}-reason`}>Reason {request.requireReason ? "(required)" : "(optional)"}</label>
+            <Textarea
+              aria-describedby={`${request.key}-reason-help`}
+              aria-invalid={!reasonIsValid}
+              disabled={status === "loading"}
+              id={`${request.key}-reason`}
+              name={`${request.key}-reason`}
+              autoComplete="off"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Explain the decision…"
+            />
+            <small id={`${request.key}-reason-help`}>{request.requireReason ? "Record at least 4 characters so the decision is meaningful." : "This note is included with the decision when supported."}</small>
+          </div>
+        )}
+        {error && <div className="safe-message compact" role="alert">{error}</div>}
+        <div className="confirmation-actions">
+          <Button disabled={status === "loading"} size="sm" type="button" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button disabled={status === "loading" || !reasonIsValid} size="sm" type="button" variant={request.destructive ? "destructive" : "default"} onClick={() => void confirm()}>
+            {status === "loading" ? "Working…" : request.confirmLabel}
+          </Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function restoreInteractionFocus(previous: HTMLElement | null): void {
+  if (!previous) {
+    return;
+  }
+  if (previous.isConnected) {
+    previous.focus();
+    return;
+  }
+  const ariaLabel = previous.getAttribute("aria-label");
+  const text = previous.textContent?.trim();
+  const replacement = Array.from(document.querySelectorAll<HTMLElement>(
+    "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+  )).find((candidate) => (
+    candidate.tagName === previous.tagName
+    && (ariaLabel ? candidate.getAttribute("aria-label") === ariaLabel : candidate.textContent?.trim() === text)
+  ));
+  replacement?.focus();
 }
 
 function RoleEditor({
@@ -2871,6 +3662,21 @@ function formatStatusLabel(value: string) {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
+function releaseActionConfirmationDescription(action: ReleaseLifecycleActionName): string {
+  switch (action) {
+    case "delete":
+      return "This release will be removed and cannot be restored from this screen. Record why deletion is required.";
+    case "revoke":
+      return "Install and export access will be revoked for this release. Record the security or governance reason.";
+    case "unpublish":
+      return "The release will no longer be available from public registry surfaces. Record why it must be withdrawn.";
+    case "deprecate":
+      return "The release remains discoverable but will be marked as deprecated. Record the migration or support reason.";
+    case "restore":
+      return "The release will return to the lifecycle state allowed by its review and security status.";
+  }
+}
+
 function AuthWidget({
   authMessage,
   authState,
@@ -2906,7 +3712,7 @@ function AuthWidget({
       return;
     }
     let active = true;
-    client.getMfaStatus(session.token)
+    client.getMfaStatus()
       .then((status) => {
         if (active) {
           setMfaStatus(status);
@@ -2920,7 +3726,7 @@ function AuthWidget({
     return () => {
       active = false;
     };
-  }, [client, session?.token]);
+  }, [client, session?.expiresAt]);
 
   if (session) {
     const mfaEnabled = Boolean(mfaStatus?.totpEnabled || session.user.mfaVerified);
@@ -3067,7 +3873,7 @@ function AuthWidget({
           Forgot password?
         </Button>
       )}
-      <p className="auth-help">Access is limited to approved private-development accounts.</p>
+      <p className="auth-help">Access is limited to approved hosted-beta accounts.</p>
       <AuthMessage message={authMessage} />
     </form>
   );
@@ -3097,7 +3903,7 @@ function MfaSetupPanel({
     setState("loading");
     setMessage(null);
     try {
-      const nextEnrollment = await client.startTotpEnrollment({ password: passwordOverride ?? password, label: "1Password" }, session.token);
+      const nextEnrollment = await client.startTotpEnrollment({ password: passwordOverride ?? password, label: "1Password" });
       setEnrollment({
         factorId: nextEnrollment.factorId,
         secret: nextEnrollment.secret,
@@ -3118,7 +3924,7 @@ function MfaSetupPanel({
     setState("loading");
     setMessage(null);
     try {
-      const result = await client.confirmTotpEnrollment({ factorId: enrollment.factorId, code: (codeOverride ?? code).trim() }, session.token);
+      const result = await client.confirmTotpEnrollment({ factorId: enrollment.factorId, code: (codeOverride ?? code).trim() });
       setRecoveryCodes(result.recoveryCodes);
       setCode("");
       setState("ready");
@@ -3217,6 +4023,8 @@ function SkillDetail({
   session: WebSession | null;
   setPlatform: (platform: string) => void;
 }) {
+  const canManageSkill = Boolean(session && selectedSkill.access?.canManageSharing);
+  const canUsePrivilegedControls = Boolean(canManageSkill && session?.user.mfaVerified);
   return (
     <>
       <CardHeader className="shadcn-detail-header registry-detail-header">
@@ -3268,7 +4076,9 @@ function SkillDetail({
           </div>
         </div>
 
-        {session && selectedSkill.access?.canManageSharing && (
+        {canManageSkill && !canUsePrivilegedControls && <PrivilegedControlsLocked />}
+
+        {session && canUsePrivilegedControls && (
           <LifecyclePanel
             client={client}
             release={release}
@@ -3283,16 +4093,26 @@ function SkillDetail({
             <span>CLI export</span>
           </div>
           <code>{command}</code>
-          <Button className="shadcn-action-button" size="sm" type="button" variant="outline" onClick={() => void navigator.clipboard?.writeText(command)}>
-            <Copy size={16} aria-hidden="true" />
-            Copy
-          </Button>
+          <CopyButton text={command} variant="outline" />
         </div>
-        {session && selectedSkill.access?.canManageSharing && (
+        {session && canUsePrivilegedControls && (
           <SharingPanel client={client} selectedSkill={selectedSkill} session={session} />
         )}
       </CardContent>
     </>
+  );
+}
+
+function PrivilegedControlsLocked() {
+  return (
+    <section className="privileged-controls-locked" role="status" aria-labelledby="privileged-controls-heading">
+      <LockKeyhole size={20} aria-hidden="true" />
+      <div>
+        <h2 id="privileged-controls-heading">Lifecycle and sharing controls are locked</h2>
+        <p>Sign in with MFA before changing lifecycle state, release availability, metadata, or sharing access.</p>
+      </div>
+      <a href="/settings">Review security settings</a>
+    </section>
   );
 }
 
@@ -3313,19 +4133,20 @@ function LifecyclePanel({
   const [title, setTitle] = useState(selectedSkill.title);
   const [summary, setSummary] = useState(selectedSkill.summary);
   const [reason, setReason] = useState("");
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const currentRelease = releases.find((item) => item.version === release.version);
 
   const refresh = useCallback(async () => {
     setState("loading");
     setMessage(null);
     try {
-      setReleases(await client.listSkillReleases(selectedSkill.slug, session.token));
+      setReleases(await client.listSkillReleases(selectedSkill.slug));
       setState("ready");
     } catch (error) {
       setMessage(safeReviewErrorMessage(error));
       setState("error");
     }
-  }, [client, selectedSkill.slug, session.token]);
+  }, [client, selectedSkill.slug]);
 
   useEffect(() => {
     void refresh();
@@ -3339,7 +4160,7 @@ function LifecyclePanel({
         title,
         summary,
         reason,
-      }, session.token);
+      });
       setMessage("Skill metadata saved.");
       setReason("");
     } catch (error) {
@@ -3348,26 +4169,66 @@ function LifecyclePanel({
   }
 
   async function runSkillAction(action: "archive" | "restore" | "delete") {
+    if (action === "restore") {
+      try {
+        await commitSkillAction(action, reason);
+      } catch {
+        // The safe error is already rendered by commitSkillAction.
+      }
+      return;
+    }
+    setConfirmation({
+      key: `skill-${action}`,
+      title: action === "delete" ? "Delete this skill?" : "Archive this skill?",
+      description: action === "delete"
+        ? "The skill and its public discovery path will be removed. Record why this destructive action is required."
+        : "The skill will be removed from active discovery until it is restored.",
+      confirmLabel: action === "delete" ? "Delete skill" : "Archive skill",
+      destructive: action === "delete",
+      initialReason: reason,
+      requireReason: true,
+      onConfirm: (confirmedReason) => commitSkillAction(action, confirmedReason),
+    });
+  }
+
+  async function commitSkillAction(action: "archive" | "restore" | "delete", confirmedReason: string) {
     setMessage(null);
     try {
-      await client.performSkillAction(selectedSkill.slug, action, reason, session.token);
+      await client.performSkillAction(selectedSkill.slug, action, confirmedReason || undefined);
       setMessage(`Skill ${formatStatusLabel(action).toLowerCase()} complete.`);
       setReason("");
       await refresh();
     } catch (error) {
-      setMessage(safeReviewErrorMessage(error));
+      const safeMessage = safeReviewErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
   async function runReleaseAction(action: ReleaseLifecycleActionName) {
+    setConfirmation({
+      key: `release-${action}`,
+      title: `${formatStatusLabel(action)} this release?`,
+      description: releaseActionConfirmationDescription(action),
+      confirmLabel: `${formatStatusLabel(action)} release`,
+      destructive: action === "delete" || action === "revoke" || action === "unpublish",
+      initialReason: reason,
+      requireReason: action !== "restore",
+      onConfirm: (confirmedReason) => commitReleaseAction(action, confirmedReason),
+    });
+  }
+
+  async function commitReleaseAction(action: ReleaseLifecycleActionName, confirmedReason: string) {
     setMessage(null);
     try {
-      await client.performReleaseAction(selectedSkill.slug, release.version, action, reason, undefined, session.token);
+      await client.performReleaseAction(selectedSkill.slug, release.version, action, confirmedReason || undefined, undefined);
       setMessage(`Release ${formatStatusLabel(action).toLowerCase()} complete.`);
       setReason("");
       await refresh();
     } catch (error) {
-      setMessage(safeReviewErrorMessage(error));
+      const safeMessage = safeReviewErrorMessage(error);
+      setMessage(safeMessage);
+      throw new Error(safeMessage);
     }
   }
 
@@ -3378,7 +4239,7 @@ function LifecyclePanel({
           <span className="admin-panel-icon"><Settings size={18} aria-hidden="true" /></span>
           <div>
             <FrameTitle>Lifecycle controls</FrameTitle>
-            <FrameDescription>{state === "loading" ? "Loading release state" : `${releases.length} versions tracked`}</FrameDescription>
+            <FrameDescription aria-live="polite">{state === "loading" ? "Loading release state…" : `${releases.length} versions tracked`}</FrameDescription>
           </div>
         </FrameHeader>
         {message && <div className="safe-message compact" role="status">{message}</div>}
@@ -3401,15 +4262,15 @@ function LifecyclePanel({
           </Button>
         </div>
         <div className="lifecycle-actions">
-          <Button className="shadcn-action-button" size="sm" type="button" variant="outline" onClick={() => void runSkillAction("archive")}>
+          <Button className="shadcn-action-button" disabled={state === "loading"} size="sm" type="button" variant="outline" onClick={() => void runSkillAction("archive")}>
             <PackageOpen size={15} aria-hidden="true" />
             Archive skill
           </Button>
-          <Button className="shadcn-action-button" size="sm" type="button" variant="outline" onClick={() => void runSkillAction("restore")}>
+          <Button className="shadcn-action-button" disabled={state === "loading"} size="sm" type="button" variant="outline" onClick={() => void runSkillAction("restore")}>
             <RotateCw size={15} aria-hidden="true" />
             Restore skill
           </Button>
-          <Button className="danger-button shadcn-action-button" size="sm" type="button" variant="destructive" onClick={() => void runSkillAction("delete")}>
+          <Button className="danger-button shadcn-action-button" disabled={state === "loading"} size="sm" type="button" variant="destructive" onClick={() => void runSkillAction("delete")}>
             <Trash2 size={15} aria-hidden="true" />
             Delete skill
           </Button>
@@ -3433,6 +4294,7 @@ function LifecyclePanel({
                   <Button
                     className={action === "delete" || action === "revoke" ? "danger-button compact-button shadcn-action-button" : "compact-button shadcn-action-button"}
                     key={action}
+                    disabled={state === "loading"}
                     size="sm"
                     type="button"
                     variant={action === "delete" || action === "revoke" ? "destructive" : "outline"}
@@ -3445,6 +4307,7 @@ function LifecyclePanel({
             </div>
           ))}
         </div>
+        {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
       </FramePanel>
     </Frame>
   );
@@ -3465,12 +4328,13 @@ function SharingPanel({
   const [visibility, setVisibility] = useState<VisibilityScope>(selectedSkill.visibility);
   const [teamIds, setTeamIds] = useState<string[]>([]);
   const [userEmails, setUserEmails] = useState("");
+  const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
 
   const loadSharing = useCallback(async () => {
     setState("loading");
     setMessage(null);
     try {
-      const next = await client.getSkillSharing(selectedSkill.slug, session.token);
+      const next = await client.getSkillSharing(selectedSkill.slug);
       setDetails(next);
       setVisibility(next.visibility);
       setTeamIds(next.teamGrants.map((team) => team.id));
@@ -3480,7 +4344,7 @@ function SharingPanel({
       setMessage(safeTeamErrorMessage(error));
       setState("error");
     }
-  }, [client, selectedSkill.slug, session.token]);
+  }, [client, selectedSkill.slug]);
 
   useEffect(() => {
     void loadSharing();
@@ -3490,21 +4354,47 @@ function SharingPanel({
     if (!details) {
       return;
     }
+    if (visibility === "public" && details.visibility !== "public") {
+      setConfirmation({
+        key: "publish-sharing",
+        title: "Make this skill public?",
+        description: "Any visitor will be able to discover the skill and reach its approved install or export guidance.",
+        confirmLabel: "Make public",
+        onConfirm: async () => commitSharing(),
+      });
+      return;
+    }
+    try {
+      await commitSharing();
+    } catch {
+      // The safe error is already rendered by commitSharing.
+    }
+  }
+
+  async function commitSharing() {
+    if (!details) {
+      return;
+    }
     setMessage(null);
+    setState("loading");
     try {
       const next = await client.updateSkillSharing({
         slug: selectedSkill.slug,
         visibility,
         teamIds: visibility === "team" ? teamIds : [],
         userEmails: visibility === "explicit-users" ? splitEmails(userEmails) : [],
-      }, session.token);
+      });
       setDetails(next);
       setVisibility(next.visibility);
       setTeamIds(next.teamGrants.map((team) => team.id));
       setUserEmails(next.userGrants.map((user) => user.email).join(", "));
       setMessage("Sharing saved.");
+      setState("ready");
     } catch (error) {
-      setMessage(safeTeamErrorMessage(error));
+      const safeMessage = safeTeamErrorMessage(error);
+      setMessage(safeMessage);
+      setState("error");
+      throw new Error(safeMessage);
     }
   }
 
@@ -3571,6 +4461,7 @@ function SharingPanel({
             />
           </label>
         </div>
+        {confirmation && <ConfirmationDialog key={confirmation.key} request={confirmation} onClose={() => setConfirmation(null)} />}
       </FramePanel>
     </Frame>
   );
@@ -3600,15 +4491,17 @@ function Tag({ children }: { children: string }) {
 
 function LoadingRows() {
   return (
-    <>
+    <div className="loading-announcement" role="status" aria-live="polite">
+      <span className="sr-only">Loading…</span>
       {[0, 1, 2].map((item) => <div className="loading-row" key={item} />)}
-    </>
+    </div>
   );
 }
 
 function DetailSkeleton() {
   return (
-    <div className="detail-skeleton" aria-label="Loading skill detail">
+    <div className="detail-skeleton" role="status" aria-live="polite">
+      <span className="sr-only">Loading skill detail…</span>
       <div />
       <div />
       <div />
@@ -3618,7 +4511,7 @@ function DetailSkeleton() {
 
 function resultCountText(state: LoadState, count: number): string {
   if (state === "loading") {
-    return "Loading registry...";
+    return "Loading registry…";
   }
   if (state === "error") {
     return "Registry unavailable";
@@ -3631,7 +4524,7 @@ function preferredPlatform(platforms: Array<{ name: string; status?: string }>):
 }
 
 function shortHash(value: string): string {
-  return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-8)}` : value;
+  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value;
 }
 
 function formatDate(input: string): string {
@@ -3657,9 +4550,12 @@ function isSubmitterUser(user: WebAuthUser): boolean {
 function isPublicView(view: AppView): boolean {
   return view === "landing"
     || view === "login"
+    || view === "register"
     || view === "reset-password"
     || view === "verify-email"
-    || view === "change-email";
+    || view === "change-email"
+    || view === "browse"
+    || view === "not-found";
 }
 
 function initialViewFromPath(pathname: string): AppView {
@@ -3668,6 +4564,9 @@ function initialViewFromPath(pathname: string): AppView {
   }
   if (pathname === "/login") {
     return "login";
+  }
+  if (pathname === "/auth/register") {
+    return "register";
   }
   if (pathname === "/auth/reset-password") {
     return "reset-password";
@@ -3693,7 +4592,10 @@ function initialViewFromPath(pathname: string): AppView {
   if (pathname === "/settings") {
     return "settings";
   }
-  return "browse";
+  if (pathname === "/registry" || skillSlugFromPath(pathname)) {
+    return "browse";
+  }
+  return "not-found";
 }
 
 function pathForView(view: AppView): string {
@@ -3702,6 +4604,9 @@ function pathForView(view: AppView): string {
   }
   if (view === "login") {
     return "/login";
+  }
+  if (view === "register") {
+    return "/auth/register";
   }
   if (view === "reset-password") {
     return "/auth/reset-password";
@@ -3712,7 +4617,41 @@ function pathForView(view: AppView): string {
   if (view === "change-email") {
     return "/auth/change-email";
   }
+  if (view === "not-found") {
+    return "/404";
+  }
   return view === "browse" ? "/registry" : `/${view}`;
+}
+
+function appLocationFromWindow(): { view: AppView; slug: string | null; query: string; platform: string } {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    view: initialViewFromPath(window.location.pathname),
+    slug: skillSlugFromPath(window.location.pathname),
+    query: params.get("q") ?? "",
+    platform: params.get("platform") ?? "codex",
+  };
+}
+
+function browseUrl(slug: string | null, query: string, platform: string): string {
+  const params = new URLSearchParams();
+  if (query.trim()) {
+    params.set("q", query);
+  }
+  if (platform !== "codex") {
+    params.set("platform", platform);
+  }
+  const pathname = slug ? `/skills/${slug}` : "/registry";
+  const search = params.toString();
+  return search ? `${pathname}?${search}` : pathname;
+}
+
+function handleCallbackLink(event: ReactMouseEvent<HTMLAnchorElement>, callback: () => void): void {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+    return;
+  }
+  event.preventDefault();
+  callback();
 }
 
 function registrationPostureTitle(mode: AdminRegistrationMode): string {
@@ -3840,6 +4779,33 @@ function toggleApiTokenScope(scopes: ApiTokenScope[], scope: ApiTokenScope): Api
     : [...scopes, scope];
 }
 
+function apiTokenExpiryBounds(now = new Date()): { min: string; max: string } {
+  const minimum = new Date(now.getTime() + 60_000);
+  const maximum = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000);
+  return { min: localDateTimeValue(minimum), max: localDateTimeValue(maximum) };
+}
+
+function localDateTimeValue(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function validateApiTokenExpiry(value: string, now = Date.now()):
+  | { valid: true; iso: string | undefined }
+  | { valid: false; message: string } {
+  if (!value) {
+    return { valid: true, iso: undefined };
+  }
+  const expiry = new Date(value);
+  if (Number.isNaN(expiry.getTime()) || expiry.getTime() <= now) {
+    return { valid: false, message: "Choose a valid future date and time." };
+  }
+  if (expiry.getTime() - now > 365 * 24 * 60 * 60 * 1000) {
+    return { valid: false, message: "Choose an expiry no more than 1 year away." };
+  }
+  return { valid: true, iso: expiry.toISOString() };
+}
+
 async function fileToBase64(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
@@ -3854,7 +4820,7 @@ function downloadJsonFile(filename: string, value: unknown): void {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
     return;
   }
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const blob = new Blob([JSON.stringify(value)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -3893,6 +4859,20 @@ function authActionTokenFromLocation(): string | null {
   return token && token.trim() ? token.trim() : null;
 }
 
+function clearAuthActionTokenFromLocation(): void {
+  if (!window.location.hash) {
+    return;
+  }
+  window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+}
+
+function apiErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return null;
+  }
+  return typeof error.code === "string" ? error.code : null;
+}
+
 const SESSION_STORAGE_KEY = "myskills-app:web-session";
 const MAX_WEB_ARCHIVE_BYTES = 10 * 1024 * 1024;
 const ADMIN_ROLE_OPTIONS = ["owner", "admin", "maintainer", "author", "user"];
@@ -3905,6 +4885,10 @@ function readStoredSession(): WebSession | null {
     }
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    if ("token" in parsed) {
+      clearStoredSession();
       return null;
     }
     if (!isStoredSession(parsed)) {
@@ -3923,8 +4907,7 @@ function isStoredSession(input: unknown): input is WebSession {
     return false;
   }
   const record = input as Partial<WebSession>;
-  return typeof record.token === "string" && record.token.length > 0
-    && typeof record.expiresAt === "string" && record.expiresAt.length > 0
+  return typeof record.expiresAt === "string" && record.expiresAt.length > 0
     && isStoredUser(record.user);
 }
 
@@ -3944,7 +4927,6 @@ function isStoredUser(input: unknown): input is WebAuthUser {
 
 function writeStoredSession(session: WebSession): void {
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-    token: session.token,
     expiresAt: session.expiresAt,
     user: session.user,
   }));

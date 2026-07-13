@@ -8,6 +8,8 @@ export function createSessionToken(): string {
 }
 
 export function hashSessionToken(token: string): string {
+  // Tokens contain 256 bits of CSPRNG entropy; this is an indexed lookup digest, not password hashing.
+  // codeql[js/insufficient-password-hash]
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
@@ -16,5 +18,7 @@ export function createApiToken(): string {
 }
 
 export function hashApiToken(token: string): string {
+  // Tokens contain 256 bits of CSPRNG entropy; this is an indexed lookup digest, not password hashing.
+  // codeql[js/insufficient-password-hash]
   return createHash("sha256").update(token, "utf8").digest("hex");
 }

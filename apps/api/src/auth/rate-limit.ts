@@ -43,9 +43,16 @@ export interface QueryablePool {
 }
 
 export class PostgresAuthRateLimiter implements AuthRateLimiter {
+  private consumeCount = 0;
+
   constructor(
     private readonly pool: QueryablePool,
-    private readonly options: { maxAttempts: number; windowMs: number },
+    private readonly options: {
+      maxAttempts: number;
+      windowMs: number;
+      cleanupEvery?: number;
+      cleanupBatchSize?: number;
+    },
   ) {}
 
   async consume(key: string, now = new Date()): Promise<RateLimitResult> {
@@ -73,6 +80,13 @@ export class PostgresAuthRateLimiter implements AuthRateLimiter {
     if (!row) {
       throw new Error("Auth rate limit update failed.");
     }
+    this.consumeCount += 1;
+    const cleanupEvery = Math.max(1, this.options.cleanupEvery ?? 256);
+    if (this.consumeCount % cleanupEvery === 0) {
+      void this.cleanupExpiredBuckets(now).catch(() => {
+        // Expired-bucket retention is best effort and must not fail an otherwise valid request.
+      });
+    }
     const rowResetAt = row.reset_at instanceof Date ? row.reset_at : new Date(row.reset_at);
     if (row.attempt_count > this.options.maxAttempts) {
       return {
@@ -81,5 +95,19 @@ export class PostgresAuthRateLimiter implements AuthRateLimiter {
       };
     }
     return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  async cleanupExpiredBuckets(now = new Date()): Promise<void> {
+    const batchSize = Math.min(Math.max(this.options.cleanupBatchSize ?? 1_000, 1), 10_000);
+    await this.pool.query(`
+      DELETE FROM auth_rate_limits
+      WHERE bucket_key IN (
+        SELECT bucket_key
+        FROM auth_rate_limits
+        WHERE reset_at <= $1
+        ORDER BY reset_at
+        LIMIT $2
+      )
+    `, [now, batchSize]);
   }
 }

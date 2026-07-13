@@ -92,13 +92,16 @@ services:
       TOTP_ISSUER: ${TOTP_ISSUER:-MySkills}
       APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL}
       ALLOWED_WEB_ORIGINS: ${ALLOWED_WEB_ORIGINS:?set ALLOWED_WEB_ORIGINS}
-      AUTH_NOTIFICATION_MODE: smtp
-      SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      AUTH_NOTIFICATION_MODE: ${AUTH_NOTIFICATION_MODE:-smtp}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_REQUIRE_TLS: ${SMTP_REQUIRE_TLS:-true}
       SMTP_TLS_REJECT_UNAUTHORIZED: ${SMTP_TLS_REJECT_UNAUTHORIZED:-true}
-      SMTP_FROM: ${SMTP_FROM:?set SMTP_FROM}
+      SMTP_FROM: ${SMTP_FROM:-}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       ARTIFACT_STORAGE_MODE: s3
@@ -109,10 +112,13 @@ services:
       S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
       S3_FORCE_PATH_STYLE: "true"
       S3_ALLOW_INSECURE_ENDPOINT: "true" # Only for the private Docker network MinIO endpoint above.
-    ports:
-      - "${API_PORT:-3001}:3001"
+    # Keep the API private to the Compose network. Browser and authenticated
+    # traffic enters through web's same-origin /api proxy so TRUST_PROXY has one
+    # consistent nginx hop and cannot be bypassed through a direct host port.
+    expose:
+      - "3001"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -123,6 +129,8 @@ services:
       target: web
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:?set VITE_API_BASE_URL}
+    environment:
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-http://api:3001}
     restart: unless-stopped
     depends_on:
       api:

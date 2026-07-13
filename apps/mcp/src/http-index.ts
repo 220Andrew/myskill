@@ -7,6 +7,7 @@ const port = parsePort(process.env.MYSKILLS_MCP_PORT ?? process.env.PORT ?? "300
 const endpointPath = process.env.MYSKILLS_MCP_PATH ?? "/mcp";
 const allowedHosts = parseCsv(process.env.MYSKILLS_MCP_ALLOWED_HOSTS) ?? defaultAllowedHosts(host, port);
 const allowedOrigins = parseCsv(process.env.MYSKILLS_MCP_ALLOWED_ORIGINS) ?? [];
+const trustedProxyHops = parseNonNegativeInteger(process.env.MYSKILLS_MCP_TRUST_PROXY_HOPS ?? "0", "MYSKILLS_MCP_TRUST_PROXY_HOPS");
 
 try {
   const server = createAiSkillsMcpHttpServer({
@@ -14,6 +15,7 @@ try {
     allowedOrigins,
     apiBaseUrl: process.env.MYSKILLS_API_URL,
     endpointPath,
+    trustedProxyHops,
   });
   server.listen(port, host, () => {
     console.error(`MySkills MCP HTTP listening on http://${host}:${port}${endpointPath}`);
@@ -21,7 +23,16 @@ try {
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      server.close(() => process.exit(0));
+      const forceClose = setTimeout(() => {
+        server.closeAllConnections();
+        process.exit(1);
+      }, 35_000);
+      forceClose.unref();
+      server.closeIdleConnections();
+      server.close(() => {
+        clearTimeout(forceClose);
+        process.exit(0);
+      });
     });
   }
 } catch {
@@ -42,6 +53,13 @@ function parseCsv(value: string | undefined): string[] | undefined {
     return undefined;
   }
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseNonNegativeInteger(value: string, name: string): number {
+  if (!/^\d{1,2}$/.test(value)) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return Number(value);
 }
 
 function defaultAllowedHosts(host: string, port: number): string[] {

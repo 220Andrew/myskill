@@ -1,20 +1,20 @@
 # Roadmap
 
-Version: 0.1.0-alpha.1
-Last updated: 2026-06-18
+Version: 0.1.0-beta.2
+Last updated: 2026-07-13
 
 ## Release Tracks
 
-- **Responsible public alpha (`v0.1.0-alpha.0`)**: make the repository public with clear alpha limits, sanitized examples, security reporting, reproducible artifacts, and fresh-clone proof.
-- **Public beta release**: make external trial use credible with branch protection, support/contribution surfaces, compatibility documentation, upgrade policy, issue templates, changelog, and fresh-clone rehearsal. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
-- **Short-term domain**: point `myskills.sh` to the public `myskills` repository until the website exists.
-- **Business-safe production release**: harden the alpha into an operator-ready release with stronger audit, background scanning, skill evals, provider lifecycle, artifact delivery, CLI credential storage, deploy/ops guidance, and upgrade policy. See [BUSINESS_SAFE_RELEASE_GOAL.md](BUSINESS_SAFE_RELEASE_GOAL.md).
+- **Responsible public alpha (`v0.1.0-alpha.0`)**: archived release track for the first public repository and reproducible source artifact gate.
+- **Public beta (`v0.1.0-beta.1`)**: live external trial track with owner-controlled hosted access and documented self-hosting boundaries.
+- **Beta follow-up (`v0.1.0-beta.2`)**: current candidate for local onboarding, artifact/review safety, public CLI packaging, static quality gates, release discipline, and reconciled docs. See [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md).
+- **Hosted beta**: `myskills.sh` serves the web/API application; live Railway state must be read back before claiming a candidate is deployed.
+- **Business-safe production release**: harden the beta into an operator-ready release with stronger audit, background scanning, skill evals, provider lifecycle, artifact delivery, trusted publishing, deploy/ops guidance, and upgrade policy. See [BUSINESS_SAFE_RELEASE_GOAL.md](BUSINESS_SAFE_RELEASE_GOAL.md).
 
 ## Current Focus
 
-- Finish the public-alpha release gate: fresh-clone rehearsal, public visibility switch, first reproducible alpha tag, and release artifact verification.
-- Close the public-beta readiness gate: support/contribution/changelog surfaces, compatibility and upgrade expectations, default-branch protection, GitHub security settings, clean first-run rehearsal, and release notes.
-- Keep production-hardening items tracked without blocking the responsible public alpha unless they close accepted alpha risk.
+- Close the beta.2 acceptance ledger with a clean canonical gate, fresh-clone local rehearsal, default-branch/tag protection readback, staging/user-test evidence, and explicit release approval.
+- Keep production-hardening items tracked without blocking beta unless they close accepted beta risk.
 - Complete the remaining web-app MVP gaps that affect first-user clarity: private draft management, version-history polish, instance settings administration, and the broader identity-system refresh.
 - Preserve the API as the canonical registry and trust boundary for sync-related work; local and connected-tool state should reconcile through reviewable changes, not silent overwrites.
 
@@ -23,7 +23,7 @@ Last updated: 2026-06-18
 - **Registry MVP**: Milestones 0-5 prove the private registry, auth, package, CLI, and web workflows.
 - **Quality and agent surfaces**: Milestones 6-7 add eval evidence and production-grade MCP access.
 - **Public alpha gate**: Milestone 8 makes the repo and first release public-ready.
-- **Production hardening**: Milestone 9 turns the alpha into an operator-ready deployment.
+- **Production hardening**: Milestone 9 turns the beta into an operator-ready deployment.
 - **Public website**: Milestone 10 gives `myskills.sh` a proper product and documentation surface.
 - **Future product expansion**: connected skills management, cross-tool configuration, and optional usage telemetry.
 
@@ -31,7 +31,7 @@ Last updated: 2026-06-18
 
 Goal: create a clean product repo and public-ready plan.
 
-Acceptance:
+Historical acceptance:
 
 - Private personal repo exists.
 - Public-safe README, architecture, auth, data, API/MCP/CLI, security, and roadmap docs exist.
@@ -86,7 +86,7 @@ Remaining:
 
 Blocking next release:
 
-- Public alpha blockers are tracked in Milestone 8. Remaining production items above move to Milestone 9 unless they close an accepted alpha risk.
+- Beta.2 acceptance is tracked in [BETA_RELEASE_GOAL.md](BETA_RELEASE_GOAL.md). Remaining production items above stay in Milestone 9 unless they close an accepted beta risk.
 
 ## Milestone 2: Auth And User Management Foundation
 
@@ -274,23 +274,27 @@ Current status:
 
 Done:
 
-- Responsible public-alpha docs.
+- Responsible public-alpha docs archived alongside the current beta goal.
 - Public security policy and threat model.
 - Production Docker targets, production Compose example, and production env preflight.
 - Public-safe example skill package.
-- Deterministic alpha-release check.
+- Deterministic prerelease check.
+- Self-contained public CLI tarball smoke with an exact file allowlist and clean temporary install.
+- ESLint and explicit web typecheck gates on supported Node LTS lines.
 - Tag-triggered release artifact workflow.
+- Public visibility switch.
+- First reproducible beta tag.
+- Release artifact verification from the public beta tag.
 
 Blocking next release:
 
-- Fresh-clone rehearsal.
-- Public visibility switch.
-- First reproducible alpha tag.
-- Release artifact verification from the public tag.
+- Fresh-clone local and staging/user-test rehearsal against the immutable beta.2 candidate commit.
+- Live GitHub branch/tag rules and security-setting readback.
+- Explicit tag, distribution, and production-deploy approvals.
 
 ## Milestone 9: Business-Safe Production Release
 
-Goal: turn the public alpha into a release that a business can operate with clear trust boundaries, support expectations, upgrade paths, and incident response.
+Goal: turn the public beta into a release that a business can operate with clear trust boundaries, support expectations, upgrade paths, and incident response.
 
 Depends on: Milestone 8 plus the production portions of Milestones 6 and 7.
 
@@ -309,7 +313,7 @@ Deliverables:
 Acceptance:
 
 - Fresh production-like deploy rehearsal passes from a clean clone.
-- Security/threat-model findings above accepted alpha risk are closed or tracked with explicit mitigations.
+- Security/threat-model findings above accepted beta risk are closed or tracked with explicit mitigations.
 - Admin, maintainer, author, user, CLI, API, MCP, eval, and deployment workflows have deterministic verification.
 - Upgrade from the alpha data model is tested or migration limits are clearly documented.
 
@@ -317,16 +321,17 @@ Acceptance:
 
 Goal: build a full website for MySkills at `myskills.sh`.
 
-Depends on: Milestone 8 for public-alpha positioning. The site can start before Milestone 9.
+Depends on: Milestone 8 for public-release positioning. The site can start before Milestone 9.
 
-Short-term:
+Current foundation:
 
-- Make the repository public as `myskills`.
-- Point `myskills.sh` to the public GitHub repository or a minimal redirect page.
+- The repository is public as `jremick/myskills`.
+- `myskills.sh` serves the owner-controlled beta application.
+- The repository remains the canonical documentation and self-hosting surface until a separate docs/product site is delivered.
 
 Deliverables:
 
-- Product homepage with clear alpha status and install path.
+- Product homepage with clear public beta/prerelease status and install path.
 - Documentation hub for setup, deployment, CLI, API, MCP, package authoring, security, and release notes.
 - Example skill gallery using public-safe packages.
 - Screenshots or short demos for web, CLI, MCP, submission, review, and install workflows.
@@ -341,7 +346,7 @@ Acceptance:
 
 ## Future Product Expansion
 
-These items are intentionally downstream from the public alpha and production-hardening work. They are strategic product directions, not public-alpha blockers.
+These items are intentionally downstream from the public beta and production-hardening work. They are strategic product directions, not public-beta blockers.
 
 ### Connected Skills Management
 

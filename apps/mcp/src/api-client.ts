@@ -43,7 +43,7 @@ export interface McpSession {
 
 export type FetchLike = (
   input: string,
-  init?: { method?: string; headers?: Record<string, string> },
+  init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<{
   ok: boolean;
   status: number;

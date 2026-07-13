@@ -12,12 +12,13 @@ Implemented:
 - metadata-only detail panel that does not fetch package bundle content during normal render
 - CLI export guidance derived from the selected release and platform
 - email/password login, MFA challenge completion, current-user refresh, and logout
-- session-aware API client calls that forward the active bearer token when present
+- public invitation registration with fragment-token scrubbing, safe invalid/expired states, and login handoff
+- session-aware API client calls that use credentialed `myskills_session` cookie requests
 - authenticated author package submission via `.zip` archive upload to `POST /v1/submissions`
 - author submission listing, export, and withdrawal controls
 - maintainer review dashboard for metadata-only review queue, approval, requested changes, rejection, and publication actions
 - owner/admin skill metadata and release lifecycle controls
-- owner/admin admin console for registration mode, safe user status actions, role updates, non-secret provider metadata and role mappings, and audit review
+- owner/admin admin console for registration mode, MFA-gated registration invitations, safe user status actions, role updates, non-secret provider metadata and role mappings, and audit review
 - responsive browse/detail layout for desktop and mobile widths
 
 Run locally:
@@ -30,12 +31,10 @@ npm run dev:api
 npm run dev:web
 ```
 
-The web app defaults to `http://localhost:3000` and reads `VITE_API_BASE_URL` for the API base URL.
+The web dev script loads the repository-root `.env` automatically. The app defaults to `http://localhost:3000` and reads `VITE_API_BASE_URL` for the API base URL. See [Getting Started](../../docs/GETTING_STARTED.md).
 
-## Planned Workflows
+## Planned Follow-Ups
 
-- browse/search/filter skills
-- view skill details and install/export guidance
 - manage private drafts
 - polish version-history browsing
 - administer remaining instance settings

@@ -57,6 +57,7 @@ export type FetchLike = (
   input: string,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
 ) => Promise<{
+  headers?: Headers | Record<string, string>;
   ok: boolean;
   status: number;
   text(): Promise<string>;
@@ -584,16 +585,21 @@ async function reviewCommand(parsed: ParsedArgs, runtime: CliRuntime): Promise<n
   if (subcommand === "action") {
     const submissionId = parsed.args[1];
     if (!submissionId) {
-      throw new CliError("Usage: myskills review action <submission-id> --action <approve|request-changes|reject|publish> [--reason <text>] [--api-url <url>] [--token <token>]", 2);
+      throw new CliError("Usage: myskills review action <submission-id> --action <approve|request-changes|reject|publish> [--artifact-sha256 <hash>] [--reason <text>] [--api-url <url>] [--token <token>]", 2);
     }
     const action = stringOption(parsed, "action");
     if (action !== "approve" && action !== "request-changes" && action !== "reject" && action !== "publish") {
       throw new CliError("--action must be approve, request-changes, reject, or publish.", 2);
     }
     const reason = optionalStringOption(parsed, "reason");
+    const artifactSha256 = optionalStringOption(parsed, "artifact-sha256")?.toLowerCase();
+    if (action === "approve" && !isArtifactSha256(artifactSha256)) {
+      throw new CliError("--artifact-sha256 is required when approving a submission and must be a 64-character SHA-256 hex digest.", 2);
+    }
     const response = await apiPost(`/v1/review/submissions/${encodeURIComponent(submissionId)}/actions`, {
       action,
       ...(reason ? { reason } : {}),
+      ...(action === "approve" ? { artifactSha256 } : {}),
     }, parsed, runtime, token);
     if (parsed.options.json) {
       runtime.io.stdout(JSON.stringify(response, null, 2));
@@ -609,7 +615,35 @@ async function reviewCommand(parsed: ParsedArgs, runtime: CliRuntime): Promise<n
     }
     return 0;
   }
-  throw new CliError("Usage: myskills review submissions | review action <submission-id> --action <approve|request-changes|reject|publish> [--reason <text>]", 2);
+  if (subcommand === "bundle") {
+    const submissionId = parsed.args[1];
+    if (!submissionId) {
+      throw new CliError("Usage: myskills review bundle <submission-id> [--platform <name>] [--output <file>] [--api-url <url>] [--token <token>]", 2);
+    }
+    const platform = optionalStringOption(parsed, "platform");
+    const query = platform ? `?platform=${encodeURIComponent(platform)}` : "";
+    const response = await apiGetWithHeaders(`/v1/review/submissions/${encodeURIComponent(submissionId)}/bundle${query}`, parsed, runtime, token);
+    const artifactSha256 = response.headers["x-myskills-artifact-sha256"] ?? "";
+    if (!isArtifactSha256(artifactSha256)) {
+      throw new CliError("Review bundle response is missing artifact hash.", 1);
+    }
+    const outputPath = optionalStringOption(parsed, "output");
+    if (outputPath) {
+      await mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+      await writeFile(path.resolve(outputPath), response.text, { encoding: "utf8", mode: 0o600 });
+    }
+    if (parsed.options.json) {
+      runtime.io.stdout(JSON.stringify({
+        artifactSha256,
+        ...(outputPath ? { output: path.resolve(outputPath) } : {}),
+        payload: parseJsonResponse(`/v1/review/submissions/${submissionId}/bundle`, apiBaseUrl(parsed, runtime), response.text),
+      }, null, 2));
+    } else {
+      runtime.io.stdout(`artifactSha256=${artifactSha256}${outputPath ? `\toutput=${path.resolve(outputPath)}` : ""}`);
+    }
+    return 0;
+  }
+  throw new CliError("Usage: myskills review submissions | review bundle <submission-id> | review action <submission-id> --action <approve|request-changes|reject|publish> [--artifact-sha256 <hash>] [--reason <text>]", 2);
 }
 
 async function submissionsCommand(parsed: ParsedArgs, runtime: CliRuntime): Promise<number> {
@@ -1742,6 +1776,22 @@ async function apiGet(pathname: string, parsed: ParsedArgs, runtime: CliRuntime,
   return await apiJsonRequest(pathname, parsed, runtime, { headers });
 }
 
+async function apiGetWithHeaders(pathname: string, parsed: ParsedArgs, runtime: CliRuntime, token?: string): Promise<{ headers: Record<string, string>; text: string }> {
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+  const response = await apiFetch(pathname, parsed, runtime, { headers });
+  if (!response.ok) {
+    const body = parseJsonResponse(pathname, apiBaseUrl(parsed, runtime), response.text);
+    throw apiErrorFromBody(pathname, apiBaseUrl(parsed, runtime), response.status, body, response.text);
+  }
+  return {
+    headers: response.headers,
+    text: response.text,
+  };
+}
+
 async function apiGetText(pathname: string, parsed: ParsedArgs, runtime: CliRuntime, token?: string): Promise<string> {
   const headers: Record<string, string> = {};
   if (token) {
@@ -1811,7 +1861,7 @@ async function apiFetch(
   parsed: ParsedArgs,
   runtime: CliRuntime,
   init?: { method?: string; headers?: Record<string, string>; body?: string },
-): Promise<{ ok: boolean; status: number; text: string }> {
+): Promise<{ headers: Record<string, string>; ok: boolean; status: number; text: string }> {
   const baseUrl = apiBaseUrl(parsed, runtime);
   let response: Awaited<ReturnType<FetchLike>>;
   try {
@@ -1826,10 +1876,21 @@ async function apiFetch(
     ].join("\n"), 1, "API_UNREACHABLE");
   }
   return {
+    headers: responseHeaders(response.headers),
     ok: response.ok,
     status: response.status,
     text: await response.text(),
   };
+}
+
+function responseHeaders(input: Headers | Record<string, string> | undefined): Record<string, string> {
+  if (!input) {
+    return {};
+  }
+  if (input instanceof Headers) {
+    return Object.fromEntries([...input.entries()].map(([key, value]) => [key.toLowerCase(), value]));
+  }
+  return Object.fromEntries(Object.entries(input).map(([key, value]) => [key.toLowerCase(), value]));
 }
 
 function parseJsonResponse(pathname: string, baseUrl: string, text: string): Record<string, unknown> {
@@ -2280,6 +2341,10 @@ function optionalStringOption(parsed: ParsedArgs, key: string): string | undefin
   return typeof value === "string" && value ? value : undefined;
 }
 
+function isArtifactSha256(value: string | undefined): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
 function stringListOption(parsed: ParsedArgs, key: string): string[] {
   const value = parsed.options[key];
   if (typeof value === "string") {
@@ -2407,7 +2472,8 @@ function helpText(): string {
     "  config list",
     "  submit --path <file-directory-or-zip> [--api-url <url>] [--token <token>]",
     "  review submissions [--api-url <url>] [--token <token>]",
-    "  review action <submission-id> --action <approve|request-changes|reject|publish> [--reason <text>] [--api-url <url>] [--token <token>]",
+    "  review bundle <submission-id> [--platform <name>] [--output <file>] [--api-url <url>] [--token <token>]",
+    "  review action <submission-id> --action <approve|request-changes|reject|publish> [--artifact-sha256 <hash>] [--reason <text>] [--api-url <url>] [--token <token>]",
     "  submissions list [--api-url <url>] [--token <token>]",
     "  submissions withdraw <submission-id> [--reason <text>] [--api-url <url>] [--token <token>]",
     "  skills edit <skill-slug> [--title <text>] [--summary <text>] [--visibility <scope>] [--tag <tag>] [--reason <text>] [--api-url <url>] [--token <token>]",
